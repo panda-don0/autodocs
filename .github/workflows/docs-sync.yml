@@ -17,13 +17,11 @@ on:
         type: string
       mapping_path:
         description: "Path to service mapping file in caller repository"
-        required: false
-        default: "service-mapping.yml"
+        required: true
         type: string
       pr_diff_path:
         description: "Path to temporary PR diff file"
-        required: false
-        default: "pr.diff"
+        required: true
         type: string
       docs_sync_debug:
         description: "Enable verbose docs sync debug logs"
@@ -32,33 +30,19 @@ on:
         type: string
       docs_sync_llm_provider:
         description: "LLM provider used by docs sync script"
-        required: false
-        default: "claude_code"
+        required: true
         type: string
       claude_code_command:
         description: "Command used to invoke Claude Code"
-        required: false
-        default: "npx -y @anthropic-ai/claude-code"
+        required: true
         type: string
       python_version:
         description: "Python version for runtime"
-        required: false
-        default: "3.12"
+        required: true
         type: string
       node_version:
         description: "Node.js version for runtime"
-        required: false
-        default: "20"
-        type: string
-      engine_repository:
-        description: "Repository containing docs-sync engine scripts"
-        required: false
-        default: "DonAbeyratne/autodocs"
-        type: string
-      engine_ref:
-        description: "Git ref (branch/tag/SHA) for docs-sync engine repository"
-        required: false
-        default: "main"
+        required: true
         type: string
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
@@ -71,8 +55,6 @@ on:
         required: true
       CONFLUENCE_API_TOKEN:
         required: true
-      ENGINE_REPO_TOKEN:
-        required: false
 
 concurrency:
   group: docs-sync-${{ github.repository }}-${{ inputs.base_ref }}
@@ -93,10 +75,9 @@ jobs:
       - name: Checkout docs-sync engine repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.engine_repository }}
-          ref: ${{ inputs.engine_ref }}
+          repository: panda-don0/autodocs
+          ref: main
           path: .docs-sync-engine
-          token: ${{ secrets.ENGINE_REPO_TOKEN || github.token }}
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -126,10 +107,9 @@ jobs:
       - name: Checkout docs-sync engine repository
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.engine_repository }}
-          ref: ${{ inputs.engine_ref }}
+          repository: panda-don0/autodocs
+          ref: main
           path: .docs-sync-engine
-          token: ${{ secrets.ENGINE_REPO_TOKEN || github.token }}
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
