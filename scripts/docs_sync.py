@@ -296,7 +296,7 @@ def confluence_headers(user_email: str, api_token: str) -> dict:
 
 
 def fetch_confluence_page(base_url: str, headers: dict, page_id: str) -> tuple[str, int, str]:
-    print(f"[docs_sync] Fetching Confluence page {page_id}.")
+    print(f"[docs_sync] - Fetching Confluence page {page_id}.")
     endpoint = f"{base_url}/wiki/rest/api/content/{page_id}?expand=body.storage,version,title"
     debug(f"Confluence GET endpoint: {endpoint}")
     response = requests.get(endpoint, headers=headers, timeout=30)
@@ -907,12 +907,13 @@ def main() -> None:
     end_group()
 
     for service in services:
-        start_group(f"docs_sync | {service} | context collection")
-        print(f"[docs_sync] Processing service '{service}'.")
-        print(
-            f"[docs_sync] Stage for '{service}': collecting generation context "
-            "(README, technical readme, Confluence page, mapping, diff signal, repository file index)."
-        )
+        start_group("docs_sync | context collection")
+        print(f"[docs_sync] - Processing service '{service}'.")
+        print("[docs_sync] - Collecting README context.")
+        print(f"[docs_sync] - Collecting existing technical readme context from '{technical_filename(service, service_count)}'.")
+        print("[docs_sync] - Collecting Confluence page context.")
+        print("[docs_sync] - Collecting mapping and PR diff signal context.")
+        print("[docs_sync] - Preparing repository file index for AI file requests.")
         technical_file = Path(technical_filename(service, service_count))
         technical_existing = read_optional_text(technical_file)
         technical_existing_core = strip_markdown_signature(technical_existing)
@@ -961,7 +962,7 @@ def main() -> None:
         )
         end_group()
 
-        start_group(f"docs_sync | {service} | ai pass-1")
+        start_group("docs_sync | ai pass-1")
         pass1_prompt = (
             "You are planning context retrieval for documentation generation.\n"
             "In this pass, you MAY request repository files OR provide final output directly.\n\n"
@@ -1007,7 +1008,7 @@ def main() -> None:
         debug(f"Pass-1 prompt BEGIN for service '{service}'")
         debug(pass1_prompt)
         debug(f"Pass-1 prompt END for service '{service}'")
-        print(f"[docs_sync] AI pass-1 for '{service}': context planning / file request.")
+        print(f"[docs_sync] - AI pass-1 for '{service}': context planning / file request.")
 
         pass1_output = call_claude(model, pass1_prompt)
         debug(f"Pass-1 output for service '{service}': {preview(pass1_output, 4000)}")
@@ -1016,9 +1017,9 @@ def main() -> None:
         pass1_normalized = normalize_model_markdown_output(pass1_output).strip()
         end_group()
         if requested_paths:
-            start_group(f"docs_sync | {service} | requested file loading")
+            start_group("docs_sync | requested file loading")
             print(
-                f"[docs_sync] AI pass-1 for '{service}' requested {len(requested_paths)} file(s): "
+                f"[docs_sync] - AI pass-1 for '{service}' requested {len(requested_paths)} file(s): "
                 f"{', '.join(requested_paths)}"
             )
             requested_files_context, loaded_paths, request_stats = read_requested_files_context(
@@ -1036,11 +1037,11 @@ def main() -> None:
                 )
             else:
                 print(
-                    f"[docs_sync] Requested file load outcome for '{service}': "
+                    f"[docs_sync] - Requested file load outcome for '{service}': "
                     f"loaded {len(loaded_paths)} of {len(requested_paths)}."
                 )
             end_group()
-
+            start_group("docs_sync | ai pass-2")
             start_group(f"docs_sync | {service} | ai pass-2")
             pass2_prompt = (
                 "You are updating technical and user-facing documentation for the CURRENT state of the service.\n"
@@ -1077,18 +1078,17 @@ def main() -> None:
             debug(f"Pass-2 prompt BEGIN for service '{service}'")
             debug(pass2_prompt)
             debug(f"Pass-2 prompt END for service '{service}'")
-            print(f"[docs_sync] AI pass-2 for '{service}': final generation.")
+            print(f"[docs_sync] - AI pass-2 for '{service}': final generation.")
             llm_output = call_claude(model, pass2_prompt)
             response_source = "pass-2"
-            end_group()
         else:
-            start_group(f"docs_sync | {service} | pass-1 direct outcome")
+            start_group("docs_sync | ai pass-1 outcome")
             if pass1_requested_files:
-                print(f"[docs_sync] AI pass-1 for '{service}' requested files marker but no usable file paths.")
+                print(f"[docs_sync] - AI pass-1 for '{service}' requested files marker but no usable file paths.")
             elif is_no_update_text(pass1_normalized):
-                print(f"[docs_sync] AI pass-1 for '{service}' returned {NO_UPDATE_MARKER}.")
+                print(f"[docs_sync] - AI pass-1 for '{service}' returned {NO_UPDATE_MARKER}.")
             elif MODEL_OUTPUT_DELIMITER in pass1_normalized:
-                print(f"[docs_sync] AI pass-1 for '{service}' returned final generation output directly.")
+                print(f"[docs_sync] - AI pass-1 for '{service}' returned final generation output directly.")
             else:
                 warn(
                     f"AI pass-1 for '{service}' returned an unexpected format; "
@@ -1096,24 +1096,24 @@ def main() -> None:
                 )
             llm_output = pass1_output
             response_source = "pass-1"
-            end_group()
-
-        start_group(f"docs_sync | {service} | apply updates")
         new_technical_readme, new_confluence_summary, parse_status = parse_generation_output(llm_output)
         if new_technical_readme:
             validate_technical_markdown_output(new_technical_readme)
         if new_confluence_summary:
             validate_confluence_storage_output(new_confluence_summary)
         if parse_status == "no_update":
-            print(f"[docs_sync] AI {response_source} outcome for '{service}': no updates requested.")
+            print(f"[docs_sync] - AI {response_source} outcome for '{service}': no updates requested.")
         elif parse_status == "malformed":
             warn(f"AI {response_source} outcome for '{service}': malformed response treated as no update.")
         else:
             print(
-                f"[docs_sync] AI {response_source} outcome for '{service}': "
+                f"[docs_sync] - AI {response_source} outcome for '{service}': "
                 f"technical_update={'yes' if new_technical_readme else 'no'}, "
                 f"confluence_update={'yes' if new_confluence_summary else 'no'}."
             )
+        end_group()
+
+        start_group("docs_sync | apply updates")
         debug(
             f"Model output for service '{service}': "
             f"technical_update={'yes' if new_technical_readme else 'no'}, "
