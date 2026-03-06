@@ -551,13 +551,15 @@ def sanitize_requested_path(path: str) -> str | None:
     return p
 
 
-def parse_requested_files(output_text: str, max_files: int) -> list[str]:
+def parse_requested_files(output_text: str, max_files: int) -> tuple[list[str], bool]:
     marker_index = output_text.find(REQUEST_FILES_MARKER)
     if marker_index == -1:
-        return []
+        return [], False
     block = output_text[marker_index + len(REQUEST_FILES_MARKER):]
     requested: list[str] = []
     seen: set[str] = set()
+    blocked_sensitive_count = 0
+    invalid_path_count = 0
     for line in block.splitlines():
         stripped = line.strip()
         if not stripped:
@@ -566,23 +568,33 @@ def parse_requested_files(output_text: str, max_files: int) -> list[str]:
             continue
         raw_path = stripped[1:].strip()
         if raw_path.upper() in {"NONE", "NO_FILES"}:
-            return []
+            print("[docs_sync] AI pass-1 requested no additional files.")
+            return [], True
         clean = sanitize_requested_path(raw_path)
         if not clean:
             if is_sensitive_path(raw_path):
-                debug(f"Blocked sensitive file request from model: {raw_path}")
+                blocked_sensitive_count += 1
+                warn(f"Blocked sensitive file request from AI: {raw_path}")
+            else:
+                invalid_path_count += 1
             continue
         if clean in seen:
             continue
         seen.add(clean)
         requested.append(clean)
-    if len(requested) > max_files:
-        debug(
-            f"Pass-1 requested {len(requested)} files; trimming to {max_files} "
-            "based on model-provided priority order."
+    if blocked_sensitive_count or invalid_path_count:
+        warn(
+            "AI file request list contained blocked/invalid paths. "
+            f"blocked_sensitive={blocked_sensitive_count}, invalid={invalid_path_count}"
         )
-        return requested[:max_files]
-    return requested
+    if len(requested) > max_files:
+        trimmed_count = len(requested) - max_files
+        warn(
+            f"AI requested {len(requested)} files in pass-1; trimming to {max_files} "
+            f"(dropped {trimmed_count} lowest-priority file request(s))."
+        )
+        return requested[:max_files], True
+    return requested, True
 
 
 def is_no_update_text(value: str) -> bool:
@@ -590,17 +602,20 @@ def is_no_update_text(value: str) -> bool:
     return compact in {"", NO_UPDATE_MARKER, "UNCHANGED", "NONE", "N/A"}
 
 
-def parse_generation_output(output_text: str) -> tuple[str | None, str | None]:
+def parse_generation_output(output_text: str) -> tuple[str | None, str | None, str]:
     stripped = normalize_model_markdown_output(output_text).strip()
     if is_no_update_text(stripped):
-        return None, None
+        return None, None, "no_update"
     if MODEL_OUTPUT_DELIMITER in stripped:
         readme_part, confluence_part = stripped.split(MODEL_OUTPUT_DELIMITER, 1)
         technical = None if is_no_update_text(readme_part) else strip_outer_markdown_fence(readme_part).strip()
         confluence = None if is_no_update_text(confluence_part) else strip_outer_markdown_fence(confluence_part).strip()
-        return technical, confluence
-    debug("Model output missing delimiter; treating as no-op update.")
-    return None, None
+        return technical, confluence, "two_section"
+    warn(
+        "AI response was not in a recognized output format "
+        f"(missing {MODEL_OUTPUT_DELIMITER} and not {NO_UPDATE_MARKER}); treating as no update."
+    )
+    return None, None, "malformed"
 
 def strip_outer_markdown_fence(value: str) -> str:
     text = value.strip()
@@ -750,33 +765,45 @@ def find_unmapped_dependency_candidates(
 def read_requested_files_context(
     root: Path,
     requested_paths: list[str],
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], dict[str, int]]:
     sections: list[str] = []
     loaded: list[str] = []
+    stats = {
+        "outside_repo": 0,
+        "missing": 0,
+        "blocked_sensitive": 0,
+        "excluded": 0,
+        "binary_or_non_utf8": 0,
+    }
     for rel in requested_paths:
         abs_path = (root / rel).resolve()
         try:
             abs_path.relative_to(root.resolve())
         except ValueError:
             sections.append(f"FILE: {rel}\n<skipped: outside repository>")
+            stats["outside_repo"] += 1
             continue
         if not abs_path.exists() or not abs_path.is_file():
             sections.append(f"FILE: {rel}\n<missing>")
+            stats["missing"] += 1
             continue
         if is_sensitive_path(rel):
             sections.append(f"FILE: {rel}\n<blocked: sensitive file policy>")
+            stats["blocked_sensitive"] += 1
             continue
         if should_exclude_from_doc_context(rel):
             sections.append(f"FILE: {rel}\n<skipped: excluded by context filters>")
+            stats["excluded"] += 1
             continue
         try:
             text = abs_path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             sections.append(f"FILE: {rel}\n<skipped: binary/non-utf8>")
+            stats["binary_or_non_utf8"] += 1
             continue
         loaded.append(rel)
         sections.append(f"FILE: {rel}\n{text}")
-    return "\n\n".join(sections), loaded
+    return "\n\n".join(sections), loaded, stats
 
 
 def main() -> None:
@@ -855,6 +882,10 @@ def main() -> None:
     service_count = len(services)
     changed_paths = parse_changed_paths_from_diff(pr_diff_text)
     relevant_changed_paths = filter_relevant_changed_paths(changed_paths)
+    print(
+        "[docs_sync] Stage: collected repo-level change context "
+        f"(changed_files={len(changed_paths)}, relevant_files={len(relevant_changed_paths)})."
+    )
     mapping_path_token = mapping_path.as_posix().lower()
     mapping_changed_in_diff = any(
         p.replace("\\", "/").lower() == mapping_path_token or p.replace("\\", "/").lower().endswith("/service-mapping.yml")
@@ -868,6 +899,10 @@ def main() -> None:
 
     for service in services:
         print(f"[docs_sync] Processing service '{service}'.")
+        print(
+            f"[docs_sync] Stage for '{service}': collecting generation context "
+            "(README, technical readme, Confluence page, mapping, diff signal, repository file index)."
+        )
         technical_file = Path(technical_filename(service, service_count))
         technical_existing = read_optional_text(technical_file)
         technical_existing_core = strip_markdown_signature(technical_existing)
@@ -959,17 +994,36 @@ def main() -> None:
         debug(f"Pass-1 prompt BEGIN for service '{service}'")
         debug(pass1_prompt)
         debug(f"Pass-1 prompt END for service '{service}'")
+        print(f"[docs_sync] AI pass-1 for '{service}': context planning / file request.")
 
         pass1_output = call_claude(model, pass1_prompt)
         debug(f"Pass-1 output for service '{service}': {preview(pass1_output, 4000)}")
-        requested_paths = parse_requested_files(pass1_output, max_request_files)
+        requested_paths, pass1_requested_files = parse_requested_files(pass1_output, max_request_files)
         debug(f"Requested paths for service '{service}': {requested_paths}")
+        pass1_normalized = normalize_model_markdown_output(pass1_output).strip()
         if requested_paths:
-            requested_files_context, loaded_paths = read_requested_files_context(
+            print(
+                f"[docs_sync] AI pass-1 for '{service}' requested {len(requested_paths)} file(s): "
+                f"{', '.join(requested_paths)}"
+            )
+            requested_files_context, loaded_paths, request_stats = read_requested_files_context(
                 repo_root,
                 requested_paths,
             )
             debug(f"Loaded requested file count={len(loaded_paths)} for service '{service}'")
+            if request_stats["missing"] or request_stats["outside_repo"] or request_stats["excluded"] or request_stats["binary_or_non_utf8"] or request_stats["blocked_sensitive"]:
+                warn(
+                    f"Not all requested files were provided for '{service}'. "
+                    f"loaded={len(loaded_paths)}, missing={request_stats['missing']}, "
+                    f"outside_repo={request_stats['outside_repo']}, excluded={request_stats['excluded']}, "
+                    f"binary_or_non_utf8={request_stats['binary_or_non_utf8']}, "
+                    f"blocked_sensitive={request_stats['blocked_sensitive']}"
+                )
+            else:
+                print(
+                    f"[docs_sync] Requested file load outcome for '{service}': "
+                    f"loaded {len(loaded_paths)} of {len(requested_paths)}."
+                )
 
             pass2_prompt = (
                 "You are updating technical and user-facing documentation for the CURRENT state of the service.\n"
@@ -1006,15 +1060,39 @@ def main() -> None:
             debug(f"Pass-2 prompt BEGIN for service '{service}'")
             debug(pass2_prompt)
             debug(f"Pass-2 prompt END for service '{service}'")
+            print(f"[docs_sync] AI pass-2 for '{service}': final generation.")
             llm_output = call_claude(model, pass2_prompt)
+            response_source = "pass-2"
         else:
+            if pass1_requested_files:
+                print(f"[docs_sync] AI pass-1 for '{service}' requested files marker but no usable file paths.")
+            elif is_no_update_text(pass1_normalized):
+                print(f"[docs_sync] AI pass-1 for '{service}' returned {NO_UPDATE_MARKER}.")
+            elif MODEL_OUTPUT_DELIMITER in pass1_normalized:
+                print(f"[docs_sync] AI pass-1 for '{service}' returned final generation output directly.")
+            else:
+                warn(
+                    f"AI pass-1 for '{service}' returned an unexpected format; "
+                    "downstream parser will treat malformed output as no update."
+                )
             llm_output = pass1_output
+            response_source = "pass-1"
 
-        new_technical_readme, new_confluence_summary = parse_generation_output(llm_output)
+        new_technical_readme, new_confluence_summary, parse_status = parse_generation_output(llm_output)
         if new_technical_readme:
             validate_technical_markdown_output(new_technical_readme)
         if new_confluence_summary:
             validate_confluence_storage_output(new_confluence_summary)
+        if parse_status == "no_update":
+            print(f"[docs_sync] AI {response_source} outcome for '{service}': no updates requested.")
+        elif parse_status == "malformed":
+            warn(f"AI {response_source} outcome for '{service}': malformed response treated as no update.")
+        else:
+            print(
+                f"[docs_sync] AI {response_source} outcome for '{service}': "
+                f"technical_update={'yes' if new_technical_readme else 'no'}, "
+                f"confluence_update={'yes' if new_confluence_summary else 'no'}."
+            )
         debug(
             f"Model output for service '{service}': "
             f"technical_update={'yes' if new_technical_readme else 'no'}, "
