@@ -1,0 +1,190 @@
+name: Docs Sync Engine
+
+on:
+  workflow_call:
+    inputs:
+      base_ref:
+        description: "Base branch to checkout for documentation updates"
+        required: true
+        type: string
+      pr_number:
+        description: "Pull request number"
+        required: true
+        type: string
+      pr_merge_sha:
+        description: "Merge commit SHA for required check monitoring"
+        required: true
+        type: string
+      mapping_path:
+        description: "Path to service mapping file in caller repository"
+        required: false
+        default: "service-mapping.yml"
+        type: string
+      pr_diff_path:
+        description: "Path to temporary PR diff file"
+        required: false
+        default: "pr.diff"
+        type: string
+      docs_sync_debug:
+        description: "Enable verbose docs sync debug logs"
+        required: false
+        default: "false"
+        type: string
+      docs_sync_llm_provider:
+        description: "LLM provider used by docs sync script"
+        required: false
+        default: "claude_code"
+        type: string
+      claude_code_command:
+        description: "Command used to invoke Claude Code"
+        required: false
+        default: "npx -y @anthropic-ai/claude-code"
+        type: string
+      python_version:
+        description: "Python version for runtime"
+        required: false
+        default: "3.12"
+        type: string
+      node_version:
+        description: "Node.js version for runtime"
+        required: false
+        default: "20"
+        type: string
+      engine_repository:
+        description: "Repository containing docs-sync engine scripts"
+        required: false
+        default: "DonAbeyratne/autodocs"
+        type: string
+      engine_ref:
+        description: "Git ref (branch/tag/SHA) for docs-sync engine repository"
+        required: false
+        default: "main"
+        type: string
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      CONFLUENCE_BASE_URL:
+        required: true
+      CONFLUENCE_SPACE_KEY:
+        required: true
+      CONFLUENCE_USER_EMAIL:
+        required: true
+      CONFLUENCE_API_TOKEN:
+        required: true
+      ENGINE_REPO_TOKEN:
+        required: false
+
+concurrency:
+  group: docs-sync-${{ github.repository }}-${{ inputs.base_ref }}
+  cancel-in-progress: false
+
+jobs:
+  wait_for_required_checks:
+    if: github.event.pull_request.user.login != 'github-actions[bot]' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_ref }}
+      - name: Checkout docs-sync engine repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.engine_repository }}
+          ref: ${{ inputs.engine_ref }}
+          path: .docs-sync-engine
+          token: ${{ secrets.ENGINE_REPO_TOKEN || github.token }}
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyyaml
+      - name: Wait for required checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_MERGE_SHA: ${{ inputs.pr_merge_sha }}
+        run: python .docs-sync-engine/scripts/wait_required_checks.py
+
+  sync_technical_docs:
+    if: github.event.pull_request.user.login != 'github-actions[bot]' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    needs: wait_for_required_checks
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout caller repository base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_ref }}
+          fetch-depth: 0
+      - name: Checkout docs-sync engine repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.engine_repository }}
+          ref: ${{ inputs.engine_ref }}
+          path: .docs-sync-engine
+          token: ${{ secrets.ENGINE_REPO_TOKEN || github.token }}
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip requests pyyaml
+      - name: Fetch PR diff
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_DIFF_PATH: ${{ inputs.pr_diff_path }}
+        run: |
+          curl -sS -L \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github.v3.diff" \
+            "https://api.github.com/repos/${REPO}/pulls/${PR_NUMBER}" > "${PR_DIFF_PATH}"
+      - name: Run docs sync
+        env:
+          DOCS_SYNC_DEBUG: ${{ inputs.docs_sync_debug }}
+          DOCS_SYNC_LLM_PROVIDER: ${{ inputs.docs_sync_llm_provider }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLAUDE_CODE_COMMAND: ${{ inputs.claude_code_command }}
+          CONFLUENCE_BASE_URL: ${{ secrets.CONFLUENCE_BASE_URL }}
+          CONFLUENCE_SPACE_KEY: ${{ secrets.CONFLUENCE_SPACE_KEY }}
+          CONFLUENCE_USER_EMAIL: ${{ secrets.CONFLUENCE_USER_EMAIL }}
+          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: python .docs-sync-engine/scripts/docs_sync.py --mapping "${{ inputs.mapping_path }}" --pr-diff "${{ inputs.pr_diff_path }}"
+      - name: Commit technical docs changes
+        env:
+          PR_DIFF_PATH: ${{ inputs.pr_diff_path }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f "${PR_DIFF_PATH}"
+          git add technical-readme*.md
+          if git diff --cached --quiet; then
+            echo "No technical docs changes to commit."
+            exit 0
+          fi
+          cat > .git/docs-sync-commit-msg.txt << 'EOF'
+          🤏 minor: update technical documentation
+
+          **What changed**
+          - Updated technical readme output from automated PR docs sync
+
+          **Why it changed**
+          - Keep technical docs aligned with relevant merged PR code changes
+
+          Authored-By: Claude
+          EOF
+          git commit -F .git/docs-sync-commit-msg.txt
+          git push origin "${{ inputs.base_ref }}"

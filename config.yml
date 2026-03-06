@@ -1,0 +1,15 @@
+engine:
+  name: docs-sync-engine
+  default_branch: main
+  scripts:
+    docs_sync: scripts/docs_sync.py
+    wait_required_checks: scripts/wait_required_checks.py
+  workflow:
+    reusable_workflow_path: .github/workflows/docs-sync.yml
+    mapping_input_name: mapping_path
+  defaults:
+    python_version: "3.12"
+    node_version: "20"
+    docs_sync_debug: "false"
+    docs_sync_llm_provider: "claude_code"
+    claude_code_command: "npx -y @anthropic-ai/claude-code"
