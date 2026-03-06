@@ -179,6 +179,12 @@ def fail(message: str) -> None:
 def warn(message: str) -> None:
     print(f"[docs_sync] WARNING: {message}")
 
+def start_group(title: str) -> None:
+    print(f"::group::{title}")
+
+def end_group() -> None:
+    print("::endgroup::")
+
 
 def require_env(name: str) -> str:
     value = os.getenv(name)
@@ -882,6 +888,7 @@ def main() -> None:
     service_count = len(services)
     changed_paths = parse_changed_paths_from_diff(pr_diff_text)
     relevant_changed_paths = filter_relevant_changed_paths(changed_paths)
+    start_group("docs_sync | repository context")
     print(
         "[docs_sync] Stage: collected repo-level change context "
         f"(changed_files={len(changed_paths)}, relevant_files={len(relevant_changed_paths)})."
@@ -893,11 +900,14 @@ def main() -> None:
     )
     if not relevant_changed_paths:
         print("[docs_sync] No relevant documentation-impacting file changes detected after exclusions; skipping generation.")
+        end_group()
         return
     repo_tree = build_repo_tree(repo_root)
     eligible_repo_files = [p for p in list_repo_files(repo_root) if not should_exclude_from_doc_context(p)]
+    end_group()
 
     for service in services:
+        start_group(f"docs_sync | {service} | context collection")
         print(f"[docs_sync] Processing service '{service}'.")
         print(
             f"[docs_sync] Stage for '{service}': collecting generation context "
@@ -932,9 +942,10 @@ def main() -> None:
             service,
         )
         if missing_context_candidates:
-            warn(
-                f"Potential external dependencies referenced but not mapped for '{service}': "
-                f"{', '.join(missing_context_candidates)}"
+            debug(
+                f"Heuristic only: potential unmapped dependency-like terms for '{service}': "
+                f"{', '.join(missing_context_candidates)}. "
+                "Advisory signal for prompt context, not a runtime/config error."
             )
         missing_context_block = (
             "Potential unmapped cross-service dependencies detected from repo context:\n"
@@ -948,7 +959,9 @@ def main() -> None:
             if mapping_changed_in_diff
             else "service-mapping.yml changed in this PR: false\n"
         )
+        end_group()
 
+        start_group(f"docs_sync | {service} | ai pass-1")
         pass1_prompt = (
             "You are planning context retrieval for documentation generation.\n"
             "In this pass, you MAY request repository files OR provide final output directly.\n\n"
@@ -1001,7 +1014,9 @@ def main() -> None:
         requested_paths, pass1_requested_files = parse_requested_files(pass1_output, max_request_files)
         debug(f"Requested paths for service '{service}': {requested_paths}")
         pass1_normalized = normalize_model_markdown_output(pass1_output).strip()
+        end_group()
         if requested_paths:
+            start_group(f"docs_sync | {service} | requested file loading")
             print(
                 f"[docs_sync] AI pass-1 for '{service}' requested {len(requested_paths)} file(s): "
                 f"{', '.join(requested_paths)}"
@@ -1024,7 +1039,9 @@ def main() -> None:
                     f"[docs_sync] Requested file load outcome for '{service}': "
                     f"loaded {len(loaded_paths)} of {len(requested_paths)}."
                 )
+            end_group()
 
+            start_group(f"docs_sync | {service} | ai pass-2")
             pass2_prompt = (
                 "You are updating technical and user-facing documentation for the CURRENT state of the service.\n"
                 "This is pass 2 (final generation). Do NOT request more files in this pass.\n\n"
@@ -1063,7 +1080,9 @@ def main() -> None:
             print(f"[docs_sync] AI pass-2 for '{service}': final generation.")
             llm_output = call_claude(model, pass2_prompt)
             response_source = "pass-2"
+            end_group()
         else:
+            start_group(f"docs_sync | {service} | pass-1 direct outcome")
             if pass1_requested_files:
                 print(f"[docs_sync] AI pass-1 for '{service}' requested files marker but no usable file paths.")
             elif is_no_update_text(pass1_normalized):
@@ -1077,7 +1096,9 @@ def main() -> None:
                 )
             llm_output = pass1_output
             response_source = "pass-1"
+            end_group()
 
+        start_group(f"docs_sync | {service} | apply updates")
         new_technical_readme, new_confluence_summary, parse_status = parse_generation_output(llm_output)
         if new_technical_readme:
             validate_technical_markdown_output(new_technical_readme)
@@ -1138,6 +1159,7 @@ def main() -> None:
                 print(f"[docs_sync] No Confluence change detected for page {page_id}.")
         else:
             print(f"[docs_sync] Confluence update not required for service '{service}'.")
+        end_group()
 
     print("[docs_sync] Documentation sync completed successfully.")
 
