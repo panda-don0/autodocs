@@ -16,6 +16,7 @@ CONFIG_PATH = "docs-sync-config.yml"
 MODEL_OUTPUT_DELIMITER = "CONFLUENCE_SUMMARY:"
 REQUEST_FILES_MARKER = "REQUEST_FILES:"
 DEFAULT_MAX_REQUEST_FILES = 12
+DEFAULT_MAX_RELATED_CONFLUENCE_PAGES = 8
 NO_UPDATE_MARKER = "NO_UPDATE"
 SENSITIVE_FILE_NAMES = {
     ".env",
@@ -295,26 +296,236 @@ def confluence_headers(user_email: str, api_token: str) -> dict:
     }
 
 
-def fetch_confluence_page(base_url: str, headers: dict, page_id: str) -> tuple[str, int, str]:
+def fetch_confluence_page(
+    base_url: str,
+    headers: dict,
+    page_id: str,
+    *,
+    strict: bool = True,
+) -> tuple[str, int, str] | None:
     print(f"[docs_sync] - Fetching Confluence page {page_id}.")
     endpoint = f"{base_url}/wiki/rest/api/content/{page_id}?expand=body.storage,version,title"
     debug(f"Confluence GET endpoint: {endpoint}")
     response = requests.get(endpoint, headers=headers, timeout=30)
     if response.status_code == 404:
-        fail(f"Confluence page {page_id} does not exist.")
+        if strict:
+            fail(f"Confluence page {page_id} does not exist.")
+        warn(f"Skipping related Confluence context page {page_id}: page does not exist.")
+        return None
     if response.status_code >= 400:
-        fail(f"Confluence fetch failed for page {page_id}: HTTP {response.status_code} {response.text}")
+        if strict:
+            fail(f"Confluence fetch failed for page {page_id}: HTTP {response.status_code} {response.text}")
+        warn(
+            f"Skipping related Confluence context page {page_id}: "
+            f"HTTP {response.status_code} {response.text}"
+        )
+        return None
     data = response.json()
     title = data.get("title")
     body = ((data.get("body") or {}).get("storage") or {}).get("value")
     version_number = ((data.get("version") or {}).get("number"))
     if not title or not isinstance(title, str):
-        fail(f"Confluence page {page_id} response missing title.")
+        if strict:
+            fail(f"Confluence page {page_id} response missing title.")
+        warn(f"Skipping related Confluence context page {page_id}: missing title.")
+        return None
     if not isinstance(body, str):
-        fail(f"Confluence page {page_id} response missing body.storage.value.")
+        if strict:
+            fail(f"Confluence page {page_id} response missing body.storage.value.")
+        warn(f"Skipping related Confluence context page {page_id}: missing body.storage.value.")
+        return None
     if not isinstance(version_number, int):
-        fail(f"Confluence page {page_id} response missing version.number.")
+        if strict:
+            fail(f"Confluence page {page_id} response missing version.number.")
+        warn(f"Skipping related Confluence context page {page_id}: missing version.number.")
+        return None
     return title, version_number, body
+
+
+def parse_related_confluence_context_mapping(
+    mapping: dict,
+    services: list[str],
+) -> dict[str, list[dict[str, str]]]:
+    raw = mapping.get("service_context_pages")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        fail("service-mapping.yml field 'service_context_pages' must be a mapping if provided.")
+    result: dict[str, list[dict[str, str]]] = {}
+    for service_name, entries in raw.items():
+        if service_name not in services:
+            fail(
+                "service-mapping.yml field 'service_context_pages' contains unknown service key: "
+                f"{service_name}"
+            )
+        if not isinstance(entries, list):
+            fail(
+                "service-mapping.yml field "
+                f"'service_context_pages.{service_name}' must be a list."
+            )
+        normalized_entries: list[dict[str, str]] = []
+        for idx, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_context_pages.{service_name}[{idx}]' must be an object."
+                )
+            page_id = entry.get("page_id")
+            if not isinstance(page_id, str) or not page_id.strip():
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_context_pages.{service_name}[{idx}].page_id' must be a non-empty string."
+                )
+            category = entry.get("category", "related")
+            if not isinstance(category, str) or not category.strip():
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_context_pages.{service_name}[{idx}].category' must be a non-empty string."
+                )
+            label = entry.get("label", "")
+            if label and (not isinstance(label, str) or not label.strip()):
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_context_pages.{service_name}[{idx}].label' must be a non-empty string when provided."
+                )
+            source_service = entry.get("source_service", "")
+            if source_service and (not isinstance(source_service, str) or not source_service.strip()):
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_context_pages.{service_name}[{idx}].source_service' "
+                    "must be a non-empty string when provided."
+                )
+            source_repo = entry.get("source_repo", "")
+            if source_repo and (not isinstance(source_repo, str) or not source_repo.strip()):
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_context_pages.{service_name}[{idx}].source_repo' "
+                    "must be a non-empty string when provided."
+                )
+            normalized_entries.append(
+                {
+                    "page_id": page_id.strip(),
+                    "category": category.strip(),
+                    "label": label.strip() if isinstance(label, str) else "",
+                    "source_service": source_service.strip() if isinstance(source_service, str) else "",
+                    "source_repo": source_repo.strip() if isinstance(source_repo, str) else "",
+                }
+            )
+        result[service_name] = normalized_entries
+    return result
+
+
+def parse_service_pages_mapping(
+    mapping: dict,
+    services: list[str],
+) -> dict[str, dict[str, str]]:
+    service_pages = mapping.get("service_pages")
+    if not isinstance(service_pages, dict):
+        fail("service-mapping.yml must define 'service_pages' as a mapping.")
+    parsed: dict[str, dict[str, str]] = {}
+    for service in services:
+        entry = service_pages.get(service)
+        if not isinstance(entry, dict):
+            fail(
+                "service-mapping.yml field "
+                f"'service_pages.{service}' must be an object with at least 'page_id'."
+            )
+        page_id = entry.get("page_id")
+        if not isinstance(page_id, str) or not page_id.strip():
+            fail(
+                "service-mapping.yml field "
+                f"'service_pages.{service}.page_id' must be a non-empty string."
+            )
+        category = entry.get("category", "primary")
+        if not isinstance(category, str) or not category.strip():
+            fail(
+                "service-mapping.yml field "
+                f"'service_pages.{service}.category' must be a non-empty string when provided."
+            )
+        label = entry.get("label", "")
+        if label and (not isinstance(label, str) or not label.strip()):
+            fail(
+                "service-mapping.yml field "
+                f"'service_pages.{service}.label' must be a non-empty string when provided."
+            )
+        source_service = entry.get("source_service", "")
+        if source_service and (not isinstance(source_service, str) or not source_service.strip()):
+            fail(
+                "service-mapping.yml field "
+                f"'service_pages.{service}.source_service' must be a non-empty string when provided."
+            )
+        source_repo = entry.get("source_repo", "")
+        if source_repo and (not isinstance(source_repo, str) or not source_repo.strip()):
+            fail(
+                "service-mapping.yml field "
+                f"'service_pages.{service}.source_repo' must be a non-empty string when provided."
+            )
+        parsed[service] = {
+            "page_id": page_id.strip(),
+            "category": category.strip(),
+            "label": label.strip() if isinstance(label, str) else "",
+            "source_service": source_service.strip() if isinstance(source_service, str) else "",
+            "source_repo": source_repo.strip() if isinstance(source_repo, str) else "",
+        }
+    unknown_service_keys = sorted(set(service_pages.keys()) - set(services))
+    if unknown_service_keys:
+        fail(
+            "service-mapping.yml field 'service_pages' contains unknown service key(s): "
+            f"{', '.join(unknown_service_keys)}"
+        )
+    return parsed
+
+
+def build_related_confluence_context_block(
+    service: str,
+    related_entries: list[dict[str, str]],
+    base_url: str,
+    headers: dict,
+    max_pages: int,
+    max_chars: int,
+) -> str:
+    if not related_entries:
+        return "Related Confluence context pages:\\n- <none configured>\\n"
+    trimmed_entries = related_entries[:max_pages]
+    sections: list[str] = []
+    loaded_count = 0
+    for entry in trimmed_entries:
+        page_id = entry["page_id"]
+        category = entry["category"]
+        label = entry["label"] or "<none>"
+        source_service = entry.get("source_service", "") or "<none>"
+        source_repo = entry.get("source_repo", "") or "<none>"
+        payload = fetch_confluence_page(base_url, headers, page_id, strict=False)
+        if not payload:
+            continue
+        title, _, body = payload
+        body_core = strip_confluence_signature(body)
+        sections.append(
+            f"- page_id: {page_id}\\n"
+            f"  category: {category}\\n"
+            f"  label: {label}\\n"
+            f"  source_service: {source_service}\n"
+            f"  source_repo: {source_repo}\n"
+            f"  title: {title}\\n"
+            f"  body:\\n{limited(body_core, max_chars)}"
+        )
+        loaded_count += 1
+    if not sections:
+        warn(
+            f"No related Confluence context pages could be loaded for service '{service}'. "
+            "Continuing without related-page context."
+        )
+        return "Related Confluence context pages:\\n- <configured but none could be loaded>\\n"
+    if len(related_entries) > max_pages:
+        warn(
+            f"Service '{service}' configured {len(related_entries)} related context pages; "
+            f"using first {max_pages}."
+        )
+    print(
+        f"[docs_sync] - Loaded {loaded_count} related Confluence context page(s) "
+        f"for service '{service}'."
+    )
+    return "Related Confluence context pages:\\n" + "\\n\\n".join(sections) + "\\n"
 
 
 def update_confluence_page(base_url: str, headers: dict, page_id: str, title: str, new_body: str, version: int) -> None:
@@ -841,23 +1052,23 @@ def main() -> None:
         value = max_context_chars.get(key)
         if not isinstance(value, int) or value <= 0:
             fail(f"max_context_chars.{key} must be a positive integer.")
+    related_confluence_context_chars = max_context_chars.get("related_confluence")
+    if related_confluence_context_chars is None:
+        related_confluence_context_chars = max_context_chars["confluence"]
+    if not isinstance(related_confluence_context_chars, int) or related_confluence_context_chars <= 0:
+        fail("max_context_chars.related_confluence must be a positive integer when provided.")
 
     mapping_path = Path(args.mapping)
     mapping = yaml.safe_load(read_text(mapping_path))
     if not isinstance(mapping, dict):
         fail("service-mapping.yml must contain a top-level mapping/object.")
     services = mapping.get("services")
-    service_pages = mapping.get("service_pages")
     if not isinstance(services, list) or not services:
         fail("service-mapping.yml must define a non-empty 'services' list.")
     if any((not isinstance(service, str) or not service.strip()) for service in services):
         fail("Every services item must be a non-empty string.")
-    if not isinstance(service_pages, dict):
-        fail("service-mapping.yml must define 'service_pages' as a mapping.")
-    for service in services:
-        page_id = service_pages.get(service)
-        if not isinstance(page_id, str) or not page_id.strip():
-            fail(f"service_pages.{service} must be a non-empty Confluence page ID string.")
+    service_pages = parse_service_pages_mapping(mapping, services)
+    service_context_pages = parse_related_confluence_context_mapping(mapping, services)
 
     repo_root = Path(".").resolve()
     readme_path = Path("README.md")
@@ -883,6 +1094,10 @@ def main() -> None:
     )
 
     max_request_files = env_int("DOCS_SYNC_MAX_REQUEST_FILES", DEFAULT_MAX_REQUEST_FILES)
+    max_related_confluence_pages = env_int(
+        "DOCS_SYNC_MAX_RELATED_CONFLUENCE_PAGES",
+        DEFAULT_MAX_RELATED_CONFLUENCE_PAGES,
+    )
 
     headers = confluence_headers(confluence_user_email, confluence_api_token)
     service_count = len(services)
@@ -918,9 +1133,22 @@ def main() -> None:
         technical_existing = read_optional_text(technical_file)
         technical_existing_core = strip_markdown_signature(technical_existing)
 
-        page_id = service_pages[service]
+        primary_page = service_pages[service]
+        page_id = primary_page["page_id"]
+        primary_page_category = primary_page.get("category", "") or "<none>"
+        primary_page_label = primary_page.get("label", "") or "<none>"
+        primary_page_source_service = primary_page.get("source_service", "") or "<none>"
+        primary_page_source_repo = primary_page.get("source_repo", "") or "<none>"
         confluence_title, confluence_version, confluence_body = fetch_confluence_page(confluence_base_url, headers, page_id)
         confluence_existing_core = strip_confluence_signature(confluence_body)
+        related_confluence_block = build_related_confluence_context_block(
+            service=service,
+            related_entries=service_context_pages.get(service, []),
+            base_url=confluence_base_url,
+            headers=headers,
+            max_pages=max_related_confluence_pages,
+            max_chars=related_confluence_context_chars,
+        )
         first_write_mode = is_first_write_confluence_content(confluence_body)
         bootstrap_mode = first_write_mode or not technical_existing.strip()
         scratch_guidance_block = f"{TECH_README_SCRATCH_GUIDANCE}\n\n" if bootstrap_mode else ""
@@ -993,6 +1221,9 @@ def main() -> None:
             f"{scratch_guidance_block}"
             f"Repository: {os.getenv('GITHUB_REPOSITORY', '')}\n"
             f"Service: {service}\n"
+            f"Primary page metadata: page_id={page_id}, category={primary_page_category}, "
+            f"label={primary_page_label}, source_service={primary_page_source_service}, "
+            f"source_repo={primary_page_source_repo}\n"
             f"Bootstrap mode: {str(bootstrap_mode).lower()}\n"
             f"Confluence first-write mode: {str(first_write_mode).lower()}\n\n"
             f"{mapping_review_block}\n"
@@ -1004,6 +1235,7 @@ def main() -> None:
             f"Existing technical readme ({technical_file.name}):\n"
             f"{limited(technical_existing_core, max_context_chars['technical_readme'])}\n\n"
             f"Current Confluence body:\n{limited(confluence_existing_core, max_context_chars['confluence'])}\n"
+            f"{related_confluence_block}\n"
         )
         debug(f"Pass-1 prompt BEGIN for service '{service}'")
         debug(pass1_prompt)
@@ -1063,6 +1295,9 @@ def main() -> None:
                 f"Repository: {os.getenv('GITHUB_REPOSITORY', '')}\n"
                 f"Service: {service}\n"
                 f"Confluence Space: {confluence_space_key}\n"
+                f"Primary page metadata: page_id={page_id}, category={primary_page_category}, "
+                f"label={primary_page_label}, source_service={primary_page_source_service}, "
+                f"source_repo={primary_page_source_repo}\n"
                 f"Bootstrap mode: {str(bootstrap_mode).lower()}\n"
                 f"Confluence first-write mode: {str(first_write_mode).lower()}\n\n"
                 f"{mapping_review_block}\n"
@@ -1072,6 +1307,7 @@ def main() -> None:
                 f"Existing technical readme ({technical_file.name}):\n"
                 f"{limited(technical_existing_core, max_context_chars['technical_readme'])}\n\n"
                 f"Current Confluence body:\n{limited(confluence_existing_core, max_context_chars['confluence'])}\n\n"
+                f"{related_confluence_block}\n"
                 f"Changed files from diff (signal only):\\n{limited(chr(10).join(relevant_changed_paths) or '<none>', max_context_chars['pr_diff'])}\n\n"
                 f"Requested files provided ({len(loaded_paths)} loaded):\n{requested_files_context}\n"
             )
