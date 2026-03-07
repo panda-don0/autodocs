@@ -23,6 +23,10 @@ on:
         description: "Path to temporary PR diff file"
         required: true
         type: string
+      engine_ref:
+        description: "Git ref (commit SHA/tag/branch) used to checkout the docs-sync engine repository"
+        required: true
+        type: string
       docs_sync_debug:
         description: "Enable verbose docs sync debug logs"
         required: false
@@ -76,7 +80,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: panda-don0/autodocs
-          ref: main
+          ref: ${{ inputs.engine_ref }}
           path: .docs-sync-engine
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -108,7 +112,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: panda-don0/autodocs
-          ref: main
+          ref: ${{ inputs.engine_ref }}
           path: .docs-sync-engine
       - name: Setup Python
         uses: actions/setup-python@v5
