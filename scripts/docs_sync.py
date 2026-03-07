@@ -1132,6 +1132,15 @@ def main() -> None:
         or requested_files_total_context_chars <= 0
     ):
         fail("max_context_chars.requested_files_total must be a positive integer when provided.")
+    max_request_files = config.get("max_request_files", DEFAULT_MAX_REQUEST_FILES)
+    if not isinstance(max_request_files, int) or max_request_files <= 0:
+        fail("max_request_files must be a positive integer when provided.")
+    max_related_confluence_pages = config.get(
+        "max_related_confluence_pages",
+        DEFAULT_MAX_RELATED_CONFLUENCE_PAGES,
+    )
+    if not isinstance(max_related_confluence_pages, int) or max_related_confluence_pages <= 0:
+        fail("max_related_confluence_pages must be a positive integer when provided.")
 
     mapping_path = Path(args.mapping)
     mapping = yaml.safe_load(read_text(mapping_path))
@@ -1168,10 +1177,10 @@ def main() -> None:
         f"services_count={len(services)}"
     )
 
-    max_request_files = env_int("DOCS_SYNC_MAX_REQUEST_FILES", DEFAULT_MAX_REQUEST_FILES)
+    max_request_files = env_int("DOCS_SYNC_MAX_REQUEST_FILES", max_request_files)
     max_related_confluence_pages = env_int(
         "DOCS_SYNC_MAX_RELATED_CONFLUENCE_PAGES",
-        DEFAULT_MAX_RELATED_CONFLUENCE_PAGES,
+        max_related_confluence_pages,
     )
 
     headers = confluence_headers(confluence_user_email, confluence_api_token)
