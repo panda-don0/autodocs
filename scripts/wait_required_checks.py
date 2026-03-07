@@ -9,6 +9,7 @@ import yaml
 
 
 CONFIG_PATH = "docs-sync-config.yml"
+DEFAULT_AUTO_NO_DISCOVERED_CHECKS_GRACE_SECONDS = 120
 
 
 def fail(message: str) -> None:
@@ -79,10 +80,19 @@ def main() -> None:
 
     timeout_seconds = config.get("check_wait_timeout_seconds")
     poll_seconds = config.get("check_poll_interval_seconds")
+    no_discovered_checks_grace_seconds = config.get(
+        "auto_no_discovered_checks_grace_seconds",
+        DEFAULT_AUTO_NO_DISCOVERED_CHECKS_GRACE_SECONDS,
+    )
     if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
         fail("check_wait_timeout_seconds must be a positive integer.")
     if not isinstance(poll_seconds, int) or poll_seconds <= 0:
         fail("check_poll_interval_seconds must be a positive integer.")
+    if (
+        not isinstance(no_discovered_checks_grace_seconds, int)
+        or no_discovered_checks_grace_seconds <= 0
+    ):
+        fail("auto_no_discovered_checks_grace_seconds must be a positive integer when provided.")
 
     if not wait_enabled:
         if required_checks_mode != "explicit":
@@ -105,6 +115,10 @@ def main() -> None:
         print(f"[wait_required_checks] Explicit required checks: {required_checks}")
     else:
         print(f"[wait_required_checks] Auto mode enabled. Excluded checks: {excluded_check_names}")
+        print(
+            "[wait_required_checks] Auto mode no-check discovery grace: "
+            f"{no_discovered_checks_grace_seconds}s"
+        )
 
     while True:
         payload = github_get(checks_url, token)
@@ -129,10 +143,13 @@ def main() -> None:
                 candidate_checks.append(check_name)
             if not candidate_checks:
                 elapsed = int(time.time() - start_time)
-                if elapsed >= timeout_seconds:
-                    fail(
-                        f"Timed out after {timeout_seconds}s waiting for non-self checks to appear on commit {head_sha}."
+                if elapsed >= no_discovered_checks_grace_seconds:
+                    print(
+                        "[wait_required_checks] WARNING: No non-self checks were discovered "
+                        f"within {no_discovered_checks_grace_seconds}s for commit {head_sha}. "
+                        "Proceeding without external check gating."
                     )
+                    return
                 print(
                     "[wait_required_checks] No non-self checks discovered yet. "
                     f"Elapsed={elapsed}s. Sleeping {poll_seconds}s."
