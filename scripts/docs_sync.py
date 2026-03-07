@@ -17,6 +17,7 @@ MODEL_OUTPUT_DELIMITER = "CONFLUENCE_SUMMARY:"
 REQUEST_FILES_MARKER = "REQUEST_FILES:"
 DEFAULT_MAX_REQUEST_FILES = 12
 DEFAULT_MAX_RELATED_CONFLUENCE_PAGES = 8
+DEFAULT_MAX_REQUESTED_FILES_TOTAL_CONTEXT_CHARS: int | None = None
 NO_UPDATE_MARKER = "NO_UPDATE"
 SENSITIVE_FILE_NAMES = {
     ".env",
@@ -585,7 +586,8 @@ def call_claude_via_anthropic(api_key: str, model: str, prompt: str) -> str:
 
 def call_claude_via_claude_code(model: str, prompt: str) -> str:
     command = os.getenv("CLAUDE_CODE_COMMAND", "claude")
-    cmd = shlex.split(command) + ["-p", prompt]
+    base_cmd = shlex.split(command)
+    cmd = base_cmd + ["-p", prompt]
     debug(f"Invoking Claude Code command: {command}")
     debug(f"Configured model hint: {model}")
     try:
@@ -596,6 +598,34 @@ def call_claude_via_claude_code(model: str, prompt: str) -> str:
             timeout=600,
             check=False,
         )
+    except OSError as error:
+        if getattr(error, "errno", None) != 7:
+            fail(f"Claude Code CLI invocation failed: {error}")
+        warn(
+            "Claude Code CLI prompt argument exceeded OS command-size limit; "
+            "retrying with stdin prompt transport."
+        )
+        try:
+            result = subprocess.run(
+                base_cmd + ["-p", "-"],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=False,
+            )
+        except FileNotFoundError:
+            fail(
+                "Claude Code CLI command not found. "
+                f"Configured CLAUDE_CODE_COMMAND='{command}'."
+            )
+        except subprocess.TimeoutExpired:
+            fail("Claude Code CLI invocation timed out.")
+        except Exception as stdin_error:
+            fail(
+                "Claude Code CLI fallback invocation failed "
+                f"while retrying with stdin prompt transport: {stdin_error}"
+            )
     except FileNotFoundError:
         fail(
             "Claude Code CLI command not found. "
@@ -982,6 +1012,7 @@ def find_unmapped_dependency_candidates(
 def read_requested_files_context(
     root: Path,
     requested_paths: list[str],
+    max_total_chars: int | None = None,
 ) -> tuple[str, list[str], dict[str, int]]:
     sections: list[str] = []
     loaded: list[str] = []
@@ -991,7 +1022,11 @@ def read_requested_files_context(
         "blocked_sensitive": 0,
         "excluded": 0,
         "binary_or_non_utf8": 0,
+        "truncated_files": 0,
+        "omitted_due_budget": 0,
     }
+    used_chars = 0
+    separator = "\n\n"
     for rel in requested_paths:
         abs_path = (root / rel).resolve()
         try:
@@ -1019,8 +1054,39 @@ def read_requested_files_context(
             stats["binary_or_non_utf8"] += 1
             continue
         loaded.append(rel)
-        sections.append(f"FILE: {rel}\n{text}")
-    return "\n\n".join(sections), loaded, stats
+        section_text = f"FILE: {rel}\n{text}"
+        if max_total_chars is None:
+            sections.append(section_text)
+            continue
+        section_prefix_len = len(separator) if sections else 0
+        available = max_total_chars - used_chars - section_prefix_len
+        if available <= 0:
+            stats["omitted_due_budget"] += 1
+            continue
+        if len(section_text) <= available:
+            sections.append(section_text)
+            used_chars += section_prefix_len + len(section_text)
+            continue
+        if available <= len(f"FILE: {rel}\n"):
+            stats["omitted_due_budget"] += len(requested_paths) - len(loaded) + 1
+            break
+        truncation_suffix = "\n<truncated: requested-files context budget reached>"
+        body_available = available - len(f"FILE: {rel}\n") - len(truncation_suffix)
+        if body_available < 0:
+            body_available = 0
+        truncated_section = (
+            f"FILE: {rel}\n"
+            f"{text[:body_available]}"
+            f"{truncation_suffix}"
+        )
+        sections.append(truncated_section)
+        used_chars += section_prefix_len + len(truncated_section)
+        stats["truncated_files"] += 1
+        remaining_after_current = len(requested_paths) - len(loaded)
+        if remaining_after_current > 0:
+            stats["omitted_due_budget"] += remaining_after_current
+        break
+    return separator.join(sections), loaded, stats
 
 
 def main() -> None:
@@ -1057,6 +1123,15 @@ def main() -> None:
         related_confluence_context_chars = max_context_chars["confluence"]
     if not isinstance(related_confluence_context_chars, int) or related_confluence_context_chars <= 0:
         fail("max_context_chars.related_confluence must be a positive integer when provided.")
+    requested_files_total_context_chars = max_context_chars.get(
+        "requested_files_total",
+        DEFAULT_MAX_REQUESTED_FILES_TOTAL_CONTEXT_CHARS,
+    )
+    if requested_files_total_context_chars is not None and (
+        not isinstance(requested_files_total_context_chars, int)
+        or requested_files_total_context_chars <= 0
+    ):
+        fail("max_context_chars.requested_files_total must be a positive integer when provided.")
 
     mapping_path = Path(args.mapping)
     mapping = yaml.safe_load(read_text(mapping_path))
@@ -1257,15 +1332,18 @@ def main() -> None:
             requested_files_context, loaded_paths, request_stats = read_requested_files_context(
                 repo_root,
                 requested_paths,
+                max_total_chars=requested_files_total_context_chars,
             )
             debug(f"Loaded requested file count={len(loaded_paths)} for service '{service}'")
-            if request_stats["missing"] or request_stats["outside_repo"] or request_stats["excluded"] or request_stats["binary_or_non_utf8"] or request_stats["blocked_sensitive"]:
+            if request_stats["missing"] or request_stats["outside_repo"] or request_stats["excluded"] or request_stats["binary_or_non_utf8"] or request_stats["blocked_sensitive"] or request_stats["truncated_files"] or request_stats["omitted_due_budget"]:
                 warn(
                     f"Not all requested files were provided for '{service}'. "
                     f"loaded={len(loaded_paths)}, missing={request_stats['missing']}, "
                     f"outside_repo={request_stats['outside_repo']}, excluded={request_stats['excluded']}, "
                     f"binary_or_non_utf8={request_stats['binary_or_non_utf8']}, "
-                    f"blocked_sensitive={request_stats['blocked_sensitive']}"
+                    f"blocked_sensitive={request_stats['blocked_sensitive']}, "
+                    f"truncated_files={request_stats['truncated_files']}, "
+                    f"omitted_due_budget={request_stats['omitted_due_budget']}"
                 )
             else:
                 print(
