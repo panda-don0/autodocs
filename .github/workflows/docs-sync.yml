@@ -154,7 +154,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -f "${PR_DIFF_PATH}"
-          git add technical-readme*.md
+          if compgen -G "technical-readme*.md" > /dev/null; then
+            git add technical-readme*.md
+          else
+            echo "No technical readme files found to stage."
+          fi
           if git diff --cached --quiet; then
             echo "No technical docs changes to commit."
             exit 0

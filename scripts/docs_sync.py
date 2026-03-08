@@ -1197,10 +1197,34 @@ def main() -> None:
         p.replace("\\", "/").lower() == mapping_path_token or p.replace("\\", "/").lower().endswith("/service-mapping.yml")
         for p in changed_paths
     )
+    force_generation_reason = ""
     if not relevant_changed_paths:
-        print("[docs_sync] No relevant documentation-impacting file changes detected after exclusions; skipping generation.")
-        end_group()
-        return
+        for service in services:
+            technical_file = Path(technical_filename(service, service_count))
+            technical_existing = read_optional_text(technical_file)
+            if not technical_existing.strip():
+                force_generation_reason = (
+                    f"technical readme missing/empty for service '{service}' "
+                    f"({technical_file.name})"
+                )
+                break
+            primary_page = service_pages[service]
+            page_id = primary_page["page_id"]
+            _, _, confluence_body = fetch_confluence_page(confluence_base_url, headers, page_id)
+            if is_first_write_confluence_content(confluence_body):
+                force_generation_reason = (
+                    f"Confluence page {page_id} is empty/placeholder for service '{service}'"
+                )
+                break
+        if force_generation_reason:
+            print(
+                "[docs_sync] No relevant documentation-impacting file changes detected after exclusions, "
+                f"but bootstrap generation is required ({force_generation_reason}); continuing."
+            )
+        else:
+            print("[docs_sync] No relevant documentation-impacting file changes detected after exclusions; skipping generation.")
+            end_group()
+            return
     repo_tree = build_repo_tree(repo_root)
     eligible_repo_files = [p for p in list_repo_files(repo_root) if not should_exclude_from_doc_context(p)]
     end_group()
