@@ -1090,9 +1090,15 @@ def read_requested_files_context(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sync technical docs and Confluence from PR context.")
+    parser = argparse.ArgumentParser(description="Sync technical docs and Confluence from PR or manual context.")
     parser.add_argument("--mapping", required=True, help="Path to service-mapping.yml")
-    parser.add_argument("--pr-diff", required=True, help="Path to PR diff file")
+    parser.add_argument(
+        "--run-mode",
+        choices=["pr", "manual"],
+        default="pr",
+        help="Invocation mode: 'pr' uses PR diff signal; 'manual' uses current repository state.",
+    )
+    parser.add_argument("--pr-diff", required=False, default="", help="Path to PR diff file (required in --run-mode pr)")
     args = parser.parse_args()
 
     print("[docs_sync] Starting documentation sync.")
@@ -1157,21 +1163,29 @@ def main() -> None:
     repo_root = Path(".").resolve()
     readme_path = Path("README.md")
     readme_text = read_optional_text(readme_path)
-    pr_diff_text = read_text(Path(args.pr_diff))
     mapping_text = read_text(mapping_path)
+    run_mode = args.run_mode
+    pr_diff_text = ""
+    if run_mode == "pr":
+        if not args.pr_diff.strip():
+            fail("--pr-diff is required when --run-mode pr.")
+        pr_diff_text = read_text(Path(args.pr_diff))
 
     confluence_base_url = require_env("CONFLUENCE_BASE_URL").rstrip("/")
     confluence_space_key = require_env("CONFLUENCE_SPACE_KEY")
     confluence_user_email = require_env("CONFLUENCE_USER_EMAIL")
     confluence_api_token = require_env("CONFLUENCE_API_TOKEN")
-    pr_number = require_env("PR_NUMBER")
+    pr_number = os.getenv("PR_NUMBER", "").strip()
+    if run_mode == "pr" and not pr_number:
+        fail("Missing required environment variable PR_NUMBER for PR run mode.")
     commit_sha = os.getenv("GITHUB_SHA", "").strip()
     repo_name = os.getenv("GITHUB_REPOSITORY", "").strip() or "unknown-repo"
     update_ref = build_update_reference(pr_number, commit_sha)
     debug(
         "Runtime config: "
         f"repo={os.getenv('GITHUB_REPOSITORY', '')}, "
-        f"pr_number={pr_number}, "
+        f"run_mode={run_mode}, "
+        f"pr_number={pr_number or '<none>'}, "
         f"confluence_base_url={confluence_base_url}, "
         f"confluence_space_key={confluence_space_key}, "
         f"services_count={len(services)}"
@@ -1185,20 +1199,22 @@ def main() -> None:
 
     headers = confluence_headers(confluence_user_email, confluence_api_token)
     service_count = len(services)
-    changed_paths = parse_changed_paths_from_diff(pr_diff_text)
+    repo_tree = build_repo_tree(repo_root)
+    eligible_repo_files = [p for p in list_repo_files(repo_root) if not should_exclude_from_doc_context(p)]
+    changed_paths = parse_changed_paths_from_diff(pr_diff_text) if run_mode == "pr" else list(eligible_repo_files)
     relevant_changed_paths = filter_relevant_changed_paths(changed_paths)
     start_group("docs_sync | repository context")
     print(
         "[docs_sync] Stage: collected repo-level change context "
-        f"(changed_files={len(changed_paths)}, relevant_files={len(relevant_changed_paths)})."
+        f"(mode={run_mode}, changed_files={len(changed_paths)}, relevant_files={len(relevant_changed_paths)})."
     )
     mapping_path_token = mapping_path.as_posix().lower()
-    mapping_changed_in_diff = any(
+    mapping_changed_in_diff = run_mode == "pr" and any(
         p.replace("\\", "/").lower() == mapping_path_token or p.replace("\\", "/").lower().endswith("/service-mapping.yml")
         for p in changed_paths
     )
     force_generation_reason = ""
-    if not relevant_changed_paths:
+    if run_mode == "pr" and not relevant_changed_paths:
         for service in services:
             technical_file = Path(technical_filename(service, service_count))
             technical_existing = read_optional_text(technical_file)
@@ -1225,8 +1241,11 @@ def main() -> None:
             print("[docs_sync] No relevant documentation-impacting file changes detected after exclusions; skipping generation.")
             end_group()
             return
-    repo_tree = build_repo_tree(repo_root)
-    eligible_repo_files = [p for p in list_repo_files(repo_root) if not should_exclude_from_doc_context(p)]
+    if run_mode == "manual":
+        print(
+            "[docs_sync] Manual mode enabled; using current repository state/tree context "
+            "without PR diff gating or required-check dependence."
+        )
     end_group()
 
     for service in services:
@@ -1272,7 +1291,7 @@ def main() -> None:
                     readme_text,
                     technical_existing_core,
                     confluence_existing_core,
-                    limited(pr_diff_text, max_context_chars["pr_diff"]),
+                    limited(pr_diff_text, max_context_chars["pr_diff"]) if run_mode == "pr" else limited(chr(10).join(relevant_changed_paths), max_context_chars["pr_diff"]),
                 ]
             ),
             set(services),
@@ -1336,7 +1355,8 @@ def main() -> None:
             f"Confluence first-write mode: {str(first_write_mode).lower()}\n\n"
             f"{mapping_review_block}\n"
             f"{missing_context_block}\n"
-            f"Changed files from PR diff:\\n{limited(chr(10).join(relevant_changed_paths) or '<none>', max_context_chars['pr_diff'])}\n\n"
+            f"Changed files signal ({'PR diff' if run_mode == 'pr' else 'manual repository snapshot'}):\\n"
+            f"{limited(chr(10).join(relevant_changed_paths) or '<none>', max_context_chars['pr_diff'])}\n\n"
             f"Repository files (eligible to request):\n{chr(10).join(eligible_repo_files)}\n\n"
             f"Repository tree snapshot:\n{repo_tree}\n\n"
             f"README.md (optional):\n{limited(readme_text, max_context_chars['readme'])}\n\n"
@@ -1419,7 +1439,8 @@ def main() -> None:
                 f"{limited(technical_existing_core, max_context_chars['technical_readme'])}\n\n"
                 f"Current Confluence body:\n{limited(confluence_existing_core, max_context_chars['confluence'])}\n\n"
                 f"{related_confluence_block}\n"
-                f"Changed files from diff (signal only):\\n{limited(chr(10).join(relevant_changed_paths) or '<none>', max_context_chars['pr_diff'])}\n\n"
+                f"Changed files signal ({'PR diff' if run_mode == 'pr' else 'manual repository snapshot'}) (signal only):\\n"
+                f"{limited(chr(10).join(relevant_changed_paths) or '<none>', max_context_chars['pr_diff'])}\n\n"
                 f"Requested files provided ({len(loaded_paths)} loaded):\n{requested_files_context}\n"
             )
             debug(f"Pass-2 prompt BEGIN for service '{service}'")
