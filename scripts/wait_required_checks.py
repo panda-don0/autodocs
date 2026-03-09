@@ -9,7 +9,7 @@ import yaml
 
 
 CONFIG_PATH = "docs-sync-config.yml"
-DEFAULT_AUTO_NO_DISCOVERED_CHECKS_GRACE_SECONDS = 120
+DEFAULT_AUTO_NO_DISCOVERED_CHECKS_GRACE_SECONDS = 60
 
 
 def fail(message: str) -> None:

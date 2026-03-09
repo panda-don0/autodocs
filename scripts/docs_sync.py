@@ -19,6 +19,7 @@ DEFAULT_MAX_REQUEST_FILES = 12
 DEFAULT_MAX_RELATED_CONFLUENCE_PAGES = 8
 DEFAULT_MAX_REQUESTED_FILES_TOTAL_CONTEXT_CHARS: int | None = None
 NO_UPDATE_MARKER = "NO_UPDATE"
+README_TECH_LINK_LINE = "##### [View the auto-doc (AI generated) technical details here](technical-readme.md)"
 SENSITIVE_FILE_NAMES = {
     ".env",
     ".env.local",
@@ -244,6 +245,27 @@ def strip_markdown_signature(text: str) -> str:
         flags=re.IGNORECASE | re.DOTALL,
     )
     return re.sub(pattern, "", text).rstrip()
+
+
+def inject_readme_tech_link_if_missing(readme_text: str) -> tuple[str, bool]:
+    if not readme_text:
+        return readme_text, False
+    if README_TECH_LINK_LINE in readme_text:
+        return readme_text, False
+    lines = readme_text.splitlines()
+    heading_index = -1
+    for index, line in enumerate(lines):
+        if re.match(r"^#\s+\S", line.strip()):
+            heading_index = index
+            break
+    if heading_index == -1:
+        lines = ["# README", ""] + lines
+        heading_index = 0
+    new_lines = lines[: heading_index + 1] + ["", README_TECH_LINK_LINE] + lines[heading_index + 1 :]
+    updated_text = "\n".join(new_lines)
+    if readme_text.endswith("\n"):
+        updated_text += "\n"
+    return updated_text, True
 
 
 def append_markdown_signature(text: str, repo: str, update_ref: str) -> str:
@@ -1247,6 +1269,7 @@ def main() -> None:
             "without PR diff gating or required-check dependence."
         )
     end_group()
+    any_docs_targets_updated = False
 
     for service in services:
         start_group("docs_sync | context collection")
@@ -1501,6 +1524,7 @@ def main() -> None:
                 )
                 technical_file.write_text(normalized_new_technical, encoding="utf-8")
                 print(f"[docs_sync] Wrote technical readme file {technical_file}.")
+                any_docs_targets_updated = True
             else:
                 print(f"[docs_sync] No technical readme change detected for {technical_file}.")
         else:
@@ -1523,11 +1547,20 @@ def main() -> None:
                     signed_confluence_summary,
                     confluence_version,
                 )
+                any_docs_targets_updated = True
             else:
                 print(f"[docs_sync] No Confluence change detected for page {page_id}.")
         else:
             print(f"[docs_sync] Confluence update not required for service '{service}'.")
         end_group()
+
+    if readme_text and any_docs_targets_updated:
+        updated_readme_text, injected = inject_readme_tech_link_if_missing(readme_text)
+        if injected:
+            readme_path.write_text(updated_readme_text, encoding="utf-8")
+            print("[docs_sync] Inserted technical-readme quick link into README.md.")
+        else:
+            print("[docs_sync] README.md technical-readme quick link already present or not applicable.")
 
     print("[docs_sync] Documentation sync completed successfully.")
 
