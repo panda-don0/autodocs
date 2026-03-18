@@ -81,17 +81,17 @@ jobs:
       contents: read
     steps:
       - name: Checkout caller repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.base_ref }}
       - name: Checkout docs-sync engine repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: panda-don0/autodocs
           ref: ${{ inputs.engine_ref }}
           path: .docs-sync-engine
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ inputs.python_version }}
       - name: Install dependencies
@@ -112,22 +112,22 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout caller repository base branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.base_ref }}
           fetch-depth: 0
       - name: Checkout docs-sync engine repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: panda-don0/autodocs
           ref: ${{ inputs.engine_ref }}
           path: .docs-sync-engine
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ inputs.python_version }}
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ inputs.node_version }}
       - name: Install dependencies
@@ -197,22 +197,22 @@ jobs:
       contents: write
     steps:
       - name: Checkout caller repository base branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ inputs.base_ref }}
           fetch-depth: 0
       - name: Checkout docs-sync engine repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: panda-don0/autodocs
           ref: ${{ inputs.engine_ref }}
           path: .docs-sync-engine
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ inputs.python_version }}
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ inputs.node_version }}
       - name: Install dependencies
