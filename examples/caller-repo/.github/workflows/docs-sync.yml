@@ -1,0 +1,76 @@
+name: Sync Technical Docs (Caller Template)
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [closed]
+    paths-ignore:
+      - "**/*.md"
+      - ".github/workflows/docs-sync.yml"
+      - "docs-sync-config.yml"
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Branch to update docs on"
+        required: true
+        default: "main"
+        type: string
+      pr_number:
+        description: "PR number to fetch diff from (optional for manual mode)"
+        required: false
+        default: ""
+        type: string
+      pr_merge_sha:
+        description: "Merge commit SHA (used by required-check wait logic in PR mode)"
+        required: false
+        default: ""
+        type: string
+      mapping_path:
+        description: "Path to service mapping file"
+        required: false
+        default: "service-mapping.yml"
+        type: string
+      pr_diff_path:
+        description: "Temporary path for PR diff file"
+        required: false
+        default: "pr.diff"
+        type: string
+      engine_ref:
+        description: "Docs engine ref (tag/branch/SHA)"
+        required: false
+        default: "v1"
+        type: string
+      docs_sync_debug:
+        description: "Enable debug logs"
+        required: false
+        default: "false"
+        type: string
+
+concurrency:
+  group: docs-sync-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  docs_sync:
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.user.login != 'github-actions[bot]' && github.event.pull_request.merged == true)
+    uses: YOUR_ORG/autodocs/.github/workflows/docs-sync.yml@v1
+    with:
+      run_mode: ${{ github.event_name == 'workflow_dispatch' && 'manual' || 'pr' }}
+      base_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.base_ref || github.event.pull_request.base.ref }}
+      pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
+      pr_merge_sha: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_merge_sha || github.event.pull_request.merge_commit_sha }}
+      mapping_path: ${{ github.event_name == 'workflow_dispatch' && inputs.mapping_path || 'service-mapping.yml' }}
+      pr_diff_path: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_diff_path || 'pr.diff' }}
+      engine_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_ref || vars.DOCS_ENGINE_REF || '__SET_DOCS_ENGINE_REF_GITHUB_VAR__' }}
+      docs_sync_debug: ${{ github.event_name == 'workflow_dispatch' && inputs.docs_sync_debug || 'false' }}
+      docs_sync_llm_provider: "claude_code"
+      claude_code_command: "npx -y @anthropic-ai/claude-code"
+      python_version: "3.12"
+      node_version: "20"
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.DOCS_LLM_OAUTH_TOKEN }}
+      CONFLUENCE_BASE_URL: ${{ secrets.DOCS_CONFLUENCE_BASE_URL }}
+      CONFLUENCE_SPACE_KEY: ${{ secrets.DOCS_CONFLUENCE_SPACE_KEY }}
+      CONFLUENCE_USER_EMAIL: ${{ secrets.DOCS_CONFLUENCE_USER_EMAIL }}
+      CONFLUENCE_API_TOKEN: ${{ secrets.DOCS_CONFLUENCE_API_TOKEN }}

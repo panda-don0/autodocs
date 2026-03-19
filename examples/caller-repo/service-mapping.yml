@@ -1,0 +1,39 @@
+services:
+  - example-service
+
+service_pages:
+  page_id: "123456789"
+  category: "application"
+  source_service: "example-service"
+  source_repo: "example-repo"
+  label: "Example service overview and operating context"
+# Optional topology metadata for services managed by more than one repository.
+# This helps the model understand shared-service boundaries when generating Confluence updates.
+# service_repo_topology:
+#   mode: "multi_repo"  # single_repo | multi_repo
+#   shared_service_name: "Example Shared App"
+#   confluence_guidance: "Represent the combined service view across frontend + backend repos."
+#   managed_repos:
+#     - repo: "example-backend-repo"
+#       service: "example-service"
+#       role: "backend"
+#     - repo: "example-frontend-repo"
+#       service: "example-frontend"
+#       role: "frontend"
+#       notes: "Owns UI flows and web client behavior."
+#
+# For simple services, you can omit this block (single_repo default behavior).
+
+# Optional related Confluence context pages for each service.
+# These are read-only context sources used by docs generation.
+# service_context_pages:
+#   - page_id: "90001"
+#     category: "dependency"
+#     source_service: "shared-platform"
+#     source_repo: "shared-platform-repo"
+#     label: "Shared platform context"
+#   - page_id: "90002"
+#     category: "integration"
+#     source_service: "upstream-service"
+#     source_repo: "upstream-repo"
+#     label: "Upstream integration overview"

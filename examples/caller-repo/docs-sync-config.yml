@@ -1,0 +1,61 @@
+# docs-sync-config.yml (caller repo template)
+
+# Required check gating behavior.
+# wait_for_required_checks:
+# - true: wait for checks before docs sync
+# - false: skip waiting; requires required_checks_mode=explicit and empty required/excluded lists
+wait_for_required_checks: true
+
+# required_checks_mode:
+# - auto: discover non-self check-runs on merge commit
+# - explicit: use required_checks list exactly
+required_checks_mode: auto
+
+# Explicit required checks (used when required_checks_mode=explicit).
+required_checks: []
+
+# Check names to exclude from auto-discovery mode.
+excluded_check_names: []
+
+# Max total wait for checks to complete (seconds).
+check_wait_timeout_seconds: 5400
+
+# Poll interval while waiting for checks (seconds).
+check_poll_interval_seconds: 20
+
+## In auto mode, if no non-self checks are discovered for this long, proceed.
+## Optional; default in engine is 60.
+# auto_no_discovered_checks_grace_seconds: 60
+
+## Strict mode: must currently be set to "fail".
+confluence_missing_page_policy: fail
+
+# Claude model identifier.
+claude_model: claude-sonnet-4-5
+
+# Max number of requested files accepted from pass-1.
+# Optional; default in engine is 12.
+max_request_files: 20
+
+## Max related Confluence context pages loaded per service.
+## Optional; default in engine is 8.
+# max_related_confluence_pages: 8
+
+# Character budgets used when constructing prompt context.
+max_context_chars:
+  # PR diff signal context budget.
+  pr_diff: 24000
+  # README context budget.
+  readme: 12000
+  # Existing technical-readme context budget.
+  technical_readme: 24000
+  # Primary Confluence page context budget.
+  confluence: 24000
+  # service-mapping.yml context budget.
+  mapping: 6000
+  ## Optional override for related Confluence page context budget.
+  ## Defaults to max_context_chars.confluence when omitted.
+  # related_confluence: 24000
+  ## Optional total budget for all requested file contents in pass-2.
+  ## Omit for unlimited (engine default).
+  # requested_files_total: 200000

@@ -101,6 +101,18 @@ FINAL_OUTPUT_CONTENT_POLICY_BLOCK = (
     "- If bootstrap mode is true, generate complete initial content.\n"
     "- If bootstrap mode is false, update only sections affected by meaningful service changes.\n"
 )
+UPDATE_SEMANTICS_POLICY_BLOCK = (
+    "Update semantics policy:\\n"
+    "- Treat 'update' as targeted edits only: replace, rephrase, add, or remove only what is necessary from provided context.\\n"
+    "- Do not perform whole-document rewrites unless the provided context indicates a full rewrite is necessary.\\n"
+)
+SERVICE_REPO_TOPOLOGY_POLICY_BLOCK = (
+    "Service topology policy:\\n"
+    "- Use service_repo_topology context to determine whether this service is single-repo or multi-repo managed.\\n"
+    "- If topology mode is multi_repo, Confluence summary should represent the shared service view across listed managed repos/components.\\n"
+    "- Keep this repository's change signal explicit while preserving stable cross-repo service context from provided topology.\\n"
+    "- Do not invent additional repos/components beyond provided topology context.\\n"
+)
 SECTION_FORMAT_POLICY_BLOCK = (
     "Per-target format policy:\n"
     f"- Technical section (before {MODEL_OUTPUT_DELIMITER}) must be plain markdown text for technical-readme.md.\n"
@@ -372,8 +384,13 @@ def parse_related_confluence_context_mapping(
     raw = mapping.get("service_context_pages")
     if raw is None:
         return {}
+    if len(services) == 1 and isinstance(raw, list):
+        raw = {services[0]: raw}
     if not isinstance(raw, dict):
-        fail("service-mapping.yml field 'service_context_pages' must be a mapping if provided.")
+        fail(
+            "service-mapping.yml field 'service_context_pages' must be a mapping "
+            "or (single-service shorthand) a list."
+        )
     result: dict[str, list[dict[str, str]]] = {}
     for service_name, entries in raw.items():
         if service_name not in services:
@@ -442,9 +459,14 @@ def parse_service_pages_mapping(
     mapping: dict,
     services: list[str],
 ) -> dict[str, dict[str, str]]:
-    service_pages = mapping.get("service_pages")
-    if not isinstance(service_pages, dict):
-        fail("service-mapping.yml must define 'service_pages' as a mapping.")
+    service_pages_raw = mapping.get("service_pages")
+    if not isinstance(service_pages_raw, dict):
+        fail("service-mapping.yml must define 'service_pages' as a mapping/object.")
+    service_pages = service_pages_raw
+    if len(services) == 1:
+        sole_service = services[0]
+        if sole_service not in service_pages_raw and "page_id" in service_pages_raw:
+            service_pages = {sole_service: service_pages_raw}
     parsed: dict[str, dict[str, str]] = {}
     for service in services:
         entry = service_pages.get(service)
@@ -497,6 +519,158 @@ def parse_service_pages_mapping(
             f"{', '.join(unknown_service_keys)}"
         )
     return parsed
+
+def parse_service_repo_topology_mapping(
+    mapping: dict,
+    services: list[str],
+) -> dict[str, dict]:
+    raw = mapping.get("service_repo_topology")
+    if raw is None:
+        return {}
+    if len(services) == 1 and isinstance(raw, dict):
+        sole_service = services[0]
+        if sole_service not in raw and any(
+            key in raw
+            for key in ("mode", "managed_repos", "shared_service_name", "confluence_guidance")
+        ):
+            raw = {sole_service: raw}
+    if not isinstance(raw, dict):
+        fail(
+            "service-mapping.yml field 'service_repo_topology' must be a mapping "
+            "or (single-service shorthand) an object."
+        )
+    parsed: dict[str, dict] = {}
+    for service_name, entry in raw.items():
+        if service_name not in services:
+            fail(
+                "service-mapping.yml field 'service_repo_topology' contains unknown service key: "
+                f"{service_name}"
+            )
+        if not isinstance(entry, dict):
+            fail(
+                "service-mapping.yml field "
+                f"'service_repo_topology.{service_name}' must be an object."
+            )
+        mode = entry.get("mode", "single_repo")
+        if not isinstance(mode, str) or mode not in {"single_repo", "multi_repo"}:
+            fail(
+                "service-mapping.yml field "
+                f"'service_repo_topology.{service_name}.mode' must be 'single_repo' or 'multi_repo'."
+            )
+        shared_service_name = entry.get("shared_service_name", "")
+        if shared_service_name and (
+            not isinstance(shared_service_name, str) or not shared_service_name.strip()
+        ):
+            fail(
+                "service-mapping.yml field "
+                f"'service_repo_topology.{service_name}.shared_service_name' must be a non-empty string when provided."
+            )
+        confluence_guidance = entry.get("confluence_guidance", "")
+        if confluence_guidance and (
+            not isinstance(confluence_guidance, str) or not confluence_guidance.strip()
+        ):
+            fail(
+                "service-mapping.yml field "
+                f"'service_repo_topology.{service_name}.confluence_guidance' must be a non-empty string when provided."
+            )
+        managed_repos_raw = entry.get("managed_repos", [])
+        if managed_repos_raw is None:
+            managed_repos_raw = []
+        if not isinstance(managed_repos_raw, list):
+            fail(
+                "service-mapping.yml field "
+                f"'service_repo_topology.{service_name}.managed_repos' must be a list when provided."
+            )
+        managed_repos: list[dict[str, str]] = []
+        for idx, repo_entry in enumerate(managed_repos_raw):
+            if not isinstance(repo_entry, dict):
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_repo_topology.{service_name}.managed_repos[{idx}]' must be an object."
+                )
+            repo = repo_entry.get("repo")
+            if not isinstance(repo, str) or not repo.strip():
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_repo_topology.{service_name}.managed_repos[{idx}].repo' must be a non-empty string."
+                )
+            related_service = repo_entry.get("service", "")
+            if related_service and (
+                not isinstance(related_service, str) or not related_service.strip()
+            ):
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_repo_topology.{service_name}.managed_repos[{idx}].service' must be a non-empty string when provided."
+                )
+            role = repo_entry.get("role", "")
+            if role and (not isinstance(role, str) or not role.strip()):
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_repo_topology.{service_name}.managed_repos[{idx}].role' must be a non-empty string when provided."
+                )
+            notes = repo_entry.get("notes", "")
+            if notes and (not isinstance(notes, str) or not notes.strip()):
+                fail(
+                    "service-mapping.yml field "
+                    f"'service_repo_topology.{service_name}.managed_repos[{idx}].notes' must be a non-empty string when provided."
+                )
+            managed_repos.append(
+                {
+                    "repo": repo.strip(),
+                    "service": related_service.strip() if isinstance(related_service, str) else "",
+                    "role": role.strip() if isinstance(role, str) else "",
+                    "notes": notes.strip() if isinstance(notes, str) else "",
+                }
+            )
+        if mode == "multi_repo" and not managed_repos:
+            fail(
+                "service-mapping.yml field "
+                f"'service_repo_topology.{service_name}.managed_repos' must be non-empty when mode is 'multi_repo'."
+            )
+        parsed[service_name] = {
+            "mode": mode,
+            "shared_service_name": shared_service_name.strip() if isinstance(shared_service_name, str) else "",
+            "confluence_guidance": confluence_guidance.strip() if isinstance(confluence_guidance, str) else "",
+            "managed_repos": managed_repos,
+        }
+    return parsed
+
+
+def build_service_repo_topology_block(service: str, topology: dict | None) -> str:
+    if not topology:
+        return (
+            "Service repo topology:\\n"
+            f"- service: {service}\\n"
+            "- mode: single_repo (default)\\n"
+            "- managed_repos: <not specified>\\n"
+        )
+    lines = [
+        "Service repo topology:",
+        f"- service: {service}",
+        f"- mode: {topology.get('mode', 'single_repo')}",
+    ]
+    shared_service_name = topology.get("shared_service_name", "")
+    if shared_service_name:
+        lines.append(f"- shared_service_name: {shared_service_name}")
+    managed_repos = topology.get("managed_repos", [])
+    if managed_repos:
+        lines.append("- managed_repos:")
+        for repo_entry in managed_repos:
+            repo = repo_entry.get("repo", "")
+            related_service = repo_entry.get("service", "") or "<unspecified>"
+            role = repo_entry.get("role", "") or "<unspecified>"
+            notes = repo_entry.get("notes", "")
+            lines.append(f"  - repo: {repo}")
+            lines.append(f"    service: {related_service}")
+            lines.append(f"    role: {role}")
+            if notes:
+                lines.append(f"    notes: {notes}")
+    else:
+        lines.append("- managed_repos: <none listed>")
+    confluence_guidance = topology.get("confluence_guidance", "")
+    if confluence_guidance:
+        lines.append(f"- confluence_guidance: {confluence_guidance}")
+    return "\n".join(lines) + "\n"
 
 
 def build_related_confluence_context_block(
@@ -1181,6 +1355,7 @@ def main() -> None:
         fail("Every services item must be a non-empty string.")
     service_pages = parse_service_pages_mapping(mapping, services)
     service_context_pages = parse_related_confluence_context_mapping(mapping, services)
+    service_repo_topology = parse_service_repo_topology_mapping(mapping, services)
 
     repo_root = Path(".").resolve()
     readme_path = Path("README.md")
@@ -1299,6 +1474,10 @@ def main() -> None:
             max_pages=max_related_confluence_pages,
             max_chars=related_confluence_context_chars,
         )
+        service_topology_block = build_service_repo_topology_block(
+            service,
+            service_repo_topology.get(service),
+        )
         first_write_mode = is_first_write_confluence_content(confluence_body)
         bootstrap_mode = first_write_mode or not technical_existing.strip()
         scratch_guidance_block = f"{TECH_README_SCRATCH_GUIDANCE}\n\n" if bootstrap_mode else ""
@@ -1363,6 +1542,8 @@ def main() -> None:
             "- Ignore docs automation internals, CI docs-sync plumbing, and changelog wording concerns.\n"
             "- Treat PR diff only as change signal; target current-state documentation.\n\n"
             f"{FINAL_OUTPUT_CONTENT_POLICY_BLOCK}\n"
+            f"{UPDATE_SEMANTICS_POLICY_BLOCK}\\n"
+            f"{SERVICE_REPO_TOPOLOGY_POLICY_BLOCK}\\n"
             f"{SECTION_FORMAT_POLICY_BLOCK}\n"
             f"{NO_META_OUTPUT_POLICY_BLOCK}\n"
             f"{SENSITIVE_DATA_POLICY_BLOCK}\n"
@@ -1378,6 +1559,7 @@ def main() -> None:
             f"Confluence first-write mode: {str(first_write_mode).lower()}\n\n"
             f"{mapping_review_block}\n"
             f"{missing_context_block}\n"
+            f"{service_topology_block}\\n"
             f"Changed files signal ({'PR diff' if run_mode == 'pr' else 'manual repository snapshot'}):\\n"
             f"{limited(chr(10).join(relevant_changed_paths) or '<none>', max_context_chars['pr_diff'])}\n\n"
             f"Repository files (eligible to request):\n{chr(10).join(eligible_repo_files)}\n\n"
@@ -1440,6 +1622,8 @@ def main() -> None:
                 f"3) In two-section output, you may set either section to {NO_UPDATE_MARKER} if only one target needs change\n\n"
                 f"{strict_output_rules_pass2()}\n"
                 f"{FINAL_OUTPUT_CONTENT_POLICY_BLOCK}\n"
+                f"{UPDATE_SEMANTICS_POLICY_BLOCK}\\n"
+                f"{SERVICE_REPO_TOPOLOGY_POLICY_BLOCK}\\n"
                 f"{SECTION_FORMAT_POLICY_BLOCK}\n"
                 f"{NO_META_OUTPUT_POLICY_BLOCK}\n"
                 f"{SENSITIVE_DATA_POLICY_BLOCK}\n"
@@ -1456,6 +1640,7 @@ def main() -> None:
                 f"Confluence first-write mode: {str(first_write_mode).lower()}\n\n"
                 f"{mapping_review_block}\n"
                 f"{missing_context_block}\n"
+                f"{service_topology_block}\\n"
                 f"service-mapping.yml:\n{limited(mapping_text, max_context_chars['mapping'])}\n\n"
                 f"README.md:\n{limited(readme_text, max_context_chars['readme'])}\n\n"
                 f"Existing technical readme ({technical_file.name}):\n"
