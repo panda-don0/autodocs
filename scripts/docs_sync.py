@@ -46,6 +46,12 @@ SENSITIVE_SUFFIXES = [
     ".p12",
     ".pfx",
     ".key",
+    ".tfvars",
+    ".tfstate",
+    ".tfstate.backup",
+]
+SENSITIVE_NAME_PREFIXES = [
+    "localenv",  # localEnv.json / localEnv.<stage>.json may hold plaintext credentials
 ]
 TECH_README_SCRATCH_GUIDANCE = (
     "If technical-readme.md is missing/empty, generate it from scratch using these rules:\n"
@@ -783,9 +789,10 @@ def call_claude_via_anthropic(api_key: str, model: str, prompt: str) -> str:
 def call_claude_via_claude_code(model: str, prompt: str) -> str:
     command = os.getenv("CLAUDE_CODE_COMMAND", "claude")
     base_cmd = shlex.split(command)
-    cmd = base_cmd + ["-p", prompt]
+    model_args = ["--model", model] if model else []
+    cmd = base_cmd + model_args + ["-p", prompt]
     debug(f"Invoking Claude Code command: {command}")
-    debug(f"Configured model hint: {model}")
+    debug(f"Passing model to CLI: {model or '<none configured>'}")
     try:
         result = subprocess.run(
             cmd,
@@ -803,7 +810,7 @@ def call_claude_via_claude_code(model: str, prompt: str) -> str:
         )
         try:
             result = subprocess.run(
-                base_cmd + ["-p", "-"],
+                base_cmd + model_args + ["-p", "-"],
                 input=prompt,
                 capture_output=True,
                 text=True,
@@ -947,6 +954,8 @@ def is_sensitive_path(path: str) -> bool:
         return False
     name = Path(p).name
     if name in SENSITIVE_FILE_NAMES:
+        return True
+    if any(name.startswith(prefix) for prefix in SENSITIVE_NAME_PREFIXES):
         return True
     if any(token in f"/{p}" for token in SENSITIVE_PATH_TOKENS):
         return True
