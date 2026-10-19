@@ -7,6 +7,12 @@ service_pages:
   source_service: "example-service"
   source_repo: "example-repo"
   label: "Example service overview and operating context"
+  # Optional: keep a short entry for this service on its parent Confluence page.
+  # Only this service's entry, in a marked "Services in this area" section, is
+  # ever changed; the rest of the parent page is left as it is. The parent is the
+  # page's direct parent unless parent_page_id names another one.
+  # parent_summary: true
+  # parent_page_id: "123456000"
 # Optional topology metadata for services managed by more than one repository.
 # This helps the model understand shared-service boundaries when generating Confluence updates.
 # service_repo_topology:
