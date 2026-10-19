@@ -104,6 +104,17 @@ Mapping layout support is backward compatible; existing configurations continue 
 
 If an agentic request is “set up docs sync in this repo,” these three files should be the first target search/edit locations.
 
+## Parent page entries
+A service whose mapping sets `parent_summary: true` also keeps a two-or-three-sentence entry on its
+parent Confluence page (the direct parent, or `parent_page_id`). The logic is in `scripts/parent_page.py`:
+- Entries live in a "Services in this area" section bounded by anchor macros; nothing outside it, and no
+  other service's entry, is changed.
+- A parent with no section gets one at the end; a new service is inserted in name order.
+- A save that clashes with another run (HTTP 409) re-reads the parent and retries once, then fails.
+- The parent page must stay hand-written: never map it as any service's own page.
+
+Tests: `python -m pytest tests`.
+
 ## Suggested debug order for most incidents
 1. Confirm mode/inputs in `.github/workflows/docs-sync.yml`
 2. Check filtering + context collection in `scripts/docs_sync.py`
