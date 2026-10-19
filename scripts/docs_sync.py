@@ -46,6 +46,12 @@ SENSITIVE_SUFFIXES = [
     ".p12",
     ".pfx",
     ".key",
+    ".tfvars",
+    ".tfstate",
+    ".tfstate.backup",
+]
+SENSITIVE_NAME_PREFIXES = [
+    "localenv",  # localEnv.json / localEnv.<stage>.json may hold plaintext credentials
 ]
 TECH_README_SCRATCH_GUIDANCE = (
     "If technical-readme.md is missing/empty, generate it from scratch using these rules:\n"
@@ -94,12 +100,26 @@ ASSUMPTION_POLICY_BLOCK = (
 FINAL_OUTPUT_CONTENT_POLICY_BLOCK = (
     "Final output content policy:\n"
     "- Technical readme must be implementation-accurate engineering documentation of current state.\n"
-    "- Confluence summary must be high-level, less technical, focused on what the service does and how user/admin personas use it.\n"
+    "- Confluence summary must follow the Confluence page policy below.\n"
     "- Do NOT mention PRs, commits, diffs, changelogs, or automation internals.\n"
     "- Do NOT mention docs-sync, this script, or CI automation in final docs.\n"
     "- Use PR diff only as change signal, never as narrative output.\n"
     "- If bootstrap mode is true, generate complete initial content.\n"
     "- If bootstrap mode is false, update only sections affected by meaningful service changes.\n"
+)
+CONFLUENCE_PAGE_POLICY_BLOCK = (
+    "Confluence page policy:\n"
+    "- Audience: colleagues who are non-technical or only partly technical (operations, customer liaison, sales, management). Write in plain language and explain any acronym or product name in a few words on first use.\n"
+    "- Keep it a high-level overview. Do not include code identifiers, file paths, environment variable names, commands, SQL or configuration values; those belong in technical-readme.md.\n"
+    "- Cover these, in this order, using only facts from the provided context:\n"
+    "  1) What the service is and why it exists.\n"
+    "  2) Who uses it and for what: the main tasks, in everyday terms.\n"
+    "  3) How it works: a short plain-language walk-through of what happens, step by step.\n"
+    "  4) How it fits with the rest of the system: name each related service from service-mapping.yml and the related Confluence pages, say in one line what this service gets from or gives to it, and refer to its Confluence page by title.\n"
+    "  5) Where it runs, at a high level: its environments, without technical detail.\n"
+    "  6) Where to go for help: the source repository and its technical-readme.md for technical detail, plus owners or support routes only where the context states them.\n"
+    "- Do not invent owners, contacts, support channels, links or URLs.\n"
+    "- Keep it short enough to read in a few minutes.\n"
 )
 UPDATE_SEMANTICS_POLICY_BLOCK = (
     "Update semantics policy:\\n"
@@ -783,9 +803,10 @@ def call_claude_via_anthropic(api_key: str, model: str, prompt: str) -> str:
 def call_claude_via_claude_code(model: str, prompt: str) -> str:
     command = os.getenv("CLAUDE_CODE_COMMAND", "claude")
     base_cmd = shlex.split(command)
-    cmd = base_cmd + ["-p", prompt]
+    model_args = ["--model", model] if model else []
+    cmd = base_cmd + model_args + ["-p", prompt]
     debug(f"Invoking Claude Code command: {command}")
-    debug(f"Configured model hint: {model}")
+    debug(f"Passing model to CLI: {model or '<none configured>'}")
     try:
         result = subprocess.run(
             cmd,
@@ -803,7 +824,7 @@ def call_claude_via_claude_code(model: str, prompt: str) -> str:
         )
         try:
             result = subprocess.run(
-                base_cmd + ["-p", "-"],
+                base_cmd + model_args + ["-p", "-"],
                 input=prompt,
                 capture_output=True,
                 text=True,
@@ -947,6 +968,8 @@ def is_sensitive_path(path: str) -> bool:
         return False
     name = Path(p).name
     if name in SENSITIVE_FILE_NAMES:
+        return True
+    if any(name.startswith(prefix) for prefix in SENSITIVE_NAME_PREFIXES):
         return True
     if any(token in f"/{p}" for token in SENSITIVE_PATH_TOKENS):
         return True
@@ -1542,6 +1565,7 @@ def main() -> None:
             "- Ignore docs automation internals, CI docs-sync plumbing, and changelog wording concerns.\n"
             "- Treat PR diff only as change signal; target current-state documentation.\n\n"
             f"{FINAL_OUTPUT_CONTENT_POLICY_BLOCK}\n"
+            f"{CONFLUENCE_PAGE_POLICY_BLOCK}\n"
             f"{UPDATE_SEMANTICS_POLICY_BLOCK}\\n"
             f"{SERVICE_REPO_TOPOLOGY_POLICY_BLOCK}\\n"
             f"{SECTION_FORMAT_POLICY_BLOCK}\n"
@@ -1622,6 +1646,7 @@ def main() -> None:
                 f"3) In two-section output, you may set either section to {NO_UPDATE_MARKER} if only one target needs change\n\n"
                 f"{strict_output_rules_pass2()}\n"
                 f"{FINAL_OUTPUT_CONTENT_POLICY_BLOCK}\n"
+                f"{CONFLUENCE_PAGE_POLICY_BLOCK}\n"
                 f"{UPDATE_SEMANTICS_POLICY_BLOCK}\\n"
                 f"{SERVICE_REPO_TOPOLOGY_POLICY_BLOCK}\\n"
                 f"{SECTION_FORMAT_POLICY_BLOCK}\n"
