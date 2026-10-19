@@ -95,7 +95,7 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
       - name: Install dependencies
-        run: python -m pip install --upgrade pip pyyaml
+        run: python -m pip install --no-deps -r .docs-sync-engine/scripts/requirements.txt
       - name: Wait for required checks
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -131,7 +131,7 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
       - name: Install dependencies
-        run: python -m pip install --upgrade pip requests pyyaml
+        run: python -m pip install --no-deps -r .docs-sync-engine/scripts/requirements.txt
       - name: Fetch PR diff
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -216,7 +216,7 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
       - name: Install dependencies
-        run: python -m pip install --upgrade pip requests pyyaml
+        run: python -m pip install --no-deps -r .docs-sync-engine/scripts/requirements.txt
       - name: Run docs sync (manual mode)
         env:
           DOCS_SYNC_DEBUG: ${{ inputs.docs_sync_debug }}

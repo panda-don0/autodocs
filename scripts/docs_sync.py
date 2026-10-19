@@ -11,6 +11,8 @@ from pathlib import Path
 import requests
 import yaml
 
+from parent_page import existing_entry_text, upsert_service_entry
+
 
 CONFIG_PATH = "docs-sync-config.yml"
 MODEL_OUTPUT_DELIMITER = "CONFLUENCE_SUMMARY:"
@@ -525,12 +527,31 @@ def parse_service_pages_mapping(
                 "service-mapping.yml field "
                 f"'service_pages.{service}.source_repo' must be a non-empty string when provided."
             )
+        parent_summary = entry.get("parent_summary", False)
+        if not isinstance(parent_summary, bool):
+            fail(
+                "service-mapping.yml field "
+                f"'service_pages.{service}.parent_summary' must be true or false when provided."
+            )
+        parent_page_id = entry.get("parent_page_id", "")
+        if parent_page_id and (not isinstance(parent_page_id, str) or not parent_page_id.strip()):
+            fail(
+                "service-mapping.yml field "
+                f"'service_pages.{service}.parent_page_id' must be a non-empty string when provided."
+            )
+        if parent_page_id and not parent_summary:
+            fail(
+                "service-mapping.yml field "
+                f"'service_pages.{service}.parent_page_id' is set but parent_summary is not true."
+            )
         parsed[service] = {
             "page_id": page_id.strip(),
             "category": category.strip(),
             "label": label.strip() if isinstance(label, str) else "",
             "source_service": source_service.strip() if isinstance(source_service, str) else "",
             "source_repo": source_repo.strip() if isinstance(source_repo, str) else "",
+            "parent_summary": "true" if parent_summary else "",
+            "parent_page_id": parent_page_id.strip() if isinstance(parent_page_id, str) else "",
         }
     unknown_service_keys = sorted(set(service_pages.keys()) - set(services))
     if unknown_service_keys:
@@ -770,6 +791,114 @@ def update_confluence_page(base_url: str, headers: dict, page_id: str, title: st
     print(f"[docs_sync] Updated Confluence page {page_id} successfully.")
 
 
+def resolve_parent_page_id(base_url: str, headers: dict, page_id: str) -> str:
+    """The direct parent of a Confluence page, read from its ancestors."""
+    endpoint = f"{base_url}/wiki/rest/api/content/{page_id}?expand=ancestors"
+    debug(f"Confluence GET endpoint: {endpoint}")
+    response = requests.get(endpoint, headers=headers, timeout=30)
+    if response.status_code >= 400:
+        fail(f"Could not read ancestors of page {page_id}: HTTP {response.status_code} {response.text}")
+    ancestors = response.json().get("ancestors") or []
+    if not ancestors:
+        fail(
+            f"Page {page_id} has no parent page, so parent_summary cannot be applied. "
+            "Move the page under its parent, or set parent_page_id."
+        )
+    parent_id = str(ancestors[-1].get("id", "")).strip()
+    if not parent_id:
+        fail(f"Page {page_id}'s parent was returned without an id.")
+    return parent_id
+
+
+def put_confluence_page(base_url: str, headers: dict, page_id: str, title: str, new_body: str, version: int) -> int:
+    """Save a page; return 409 on a version clash, fail on any other error."""
+    endpoint = f"{base_url}/wiki/rest/api/content/{page_id}"
+    payload = {
+        "id": page_id,
+        "type": "page",
+        "title": title,
+        "body": {"storage": {"value": new_body, "representation": "storage"}},
+        "version": {"number": version + 1},
+    }
+    response = requests.put(endpoint, headers=headers, json=payload, timeout=30)
+    if response.status_code == 409:
+        return 409
+    if response.status_code >= 400:
+        fail(f"Confluence update failed for page {page_id}: HTTP {response.status_code} {response.text}")
+    return response.status_code
+
+
+PARENT_SUMMARY_PROMPT = (
+    "You are writing one entry for a service on its parent Confluence page.\n"
+    "The parent page lists the services in this area of the system, one short entry each.\n\n"
+    "Rules:\n"
+    "- Write two or three sentences of plain text: what the service is for and who uses it, in everyday words.\n"
+    "- Audience: colleagues who are non-technical or only partly technical.\n"
+    "- No markup, no headings, no lists, no links, no code identifiers.\n"
+    "- Use only facts from the service page provided below.\n"
+    f"- If an existing entry is given and is still accurate, return exactly {NO_UPDATE_MARKER}.\n"
+    f"- If no existing entry is given, you must write one; {NO_UPDATE_MARKER} is not allowed.\n"
+    "- Return only the entry text, with nothing before or after it.\n"
+)
+
+
+def sync_parent_entry(
+    *,
+    base_url: str,
+    headers: dict,
+    model: str,
+    service: str,
+    page_id: str,
+    configured_parent_id: str,
+    child_title: str,
+    child_body: str,
+    child_changed: bool,
+) -> None:
+    """Add or update this service's entry on its parent page, touching nothing else."""
+    parent_id = configured_parent_id or resolve_parent_page_id(base_url, headers, page_id)
+    parent_title, parent_version, parent_body = fetch_confluence_page(base_url, headers, parent_id)
+    existing = existing_entry_text(parent_body, service)
+    if existing is not None and not child_changed:
+        print(f"[docs_sync] Parent page {parent_id} entry for '{service}' is current; no change.")
+        return
+    prompt = (
+        f"{PARENT_SUMMARY_PROMPT}\n"
+        f"{ASSUMPTION_POLICY_BLOCK}\n"
+        f"{SENSITIVE_DATA_POLICY_BLOCK}\n"
+        f"Service: {service}\n"
+        f"Parent page title: {parent_title}\n"
+        f"Existing entry: {existing if existing is not None else '<none>'}\n\n"
+        f"Service page ({child_title}):\n{child_body}\n"
+    )
+    print(f"[docs_sync] - AI parent summary for '{service}' (parent page {parent_id}).")
+    answer = normalize_model_markdown_output(call_claude(model, prompt)).strip()
+    if answer.upper() == NO_UPDATE_MARKER:
+        if existing is None:
+            fail(f"Model returned {NO_UPDATE_MARKER} for '{service}', which has no parent entry yet.")
+        print(f"[docs_sync] Parent page {parent_id} entry for '{service}' still accurate; no change.")
+        return
+    validate_no_meta_output(answer, "Parent summary")
+    for attempt in (1, 2):
+        try:
+            new_body = upsert_service_entry(parent_body, service, child_title, answer)
+        except ValueError as error:
+            fail(f"Parent summary for '{service}' rejected: {error}")
+        if new_body == parent_body:
+            print(f"[docs_sync] Parent page {parent_id} entry for '{service}' unchanged.")
+            return
+        status = put_confluence_page(base_url, headers, parent_id, parent_title, new_body, parent_version)
+        if status != 409:
+            print(f"[docs_sync] Updated '{service}' entry on parent page {parent_id}.")
+            return
+        if attempt == 2:
+            fail(
+                f"Parent page {parent_id} changed twice while '{service}' was updating its entry; "
+                "re-run the job."
+            )
+        warn(f"Parent page {parent_id} changed during the update; re-reading it and retrying once.")
+        parent_title, parent_version, parent_body = fetch_confluence_page(base_url, headers, parent_id)
+
+
 def call_claude_via_anthropic(api_key: str, model: str, prompt: str) -> str:
     print(f"[docs_sync] Calling Claude model {model}.")
     response = requests.post(
@@ -800,8 +929,24 @@ def call_claude_via_anthropic(api_key: str, model: str, prompt: str) -> str:
     return text
 
 
+CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code"
+
+
+def require_pinned_claude_code(command: str) -> None:
+    """Refuse a command that would install whatever Claude Code release is newest."""
+    if CLAUDE_CODE_PACKAGE not in command:
+        return
+    if not re.search(re.escape(CLAUDE_CODE_PACKAGE) + r"@\d+\.\d+\.\d+(?:\s|$)", command):
+        fail(
+            f"CLAUDE_CODE_COMMAND '{command}' does not pin a version of {CLAUDE_CODE_PACKAGE}. "
+            f"Name an exact release, for example 'npx -y {CLAUDE_CODE_PACKAGE}@2.1.290', so every run "
+            "uses the same code."
+        )
+
+
 def call_claude_via_claude_code(model: str, prompt: str) -> str:
     command = os.getenv("CLAUDE_CODE_COMMAND", "claude")
+    require_pinned_claude_code(command)
     base_cmd = shlex.split(command)
     model_args = ["--model", model] if model else []
     cmd = base_cmd + model_args + ["-p", prompt]
@@ -1762,6 +1907,26 @@ def main() -> None:
                 print(f"[docs_sync] No Confluence change detected for page {page_id}.")
         else:
             print(f"[docs_sync] Confluence update not required for service '{service}'.")
+
+        if primary_page.get("parent_summary"):
+            child_changed = bool(new_confluence_summary) and (
+                strip_confluence_signature(new_confluence_summary).strip() != confluence_existing_core.strip()
+            )
+            sync_parent_entry(
+                base_url=confluence_base_url,
+                headers=headers,
+                model=model,
+                service=service,
+                page_id=page_id,
+                configured_parent_id=primary_page.get("parent_page_id", ""),
+                child_title=confluence_title,
+                child_body=(
+                    strip_confluence_signature(new_confluence_summary).strip()
+                    if child_changed
+                    else confluence_existing_core
+                ),
+                child_changed=child_changed,
+            )
         end_group()
 
     if readme_text and any_docs_targets_updated:

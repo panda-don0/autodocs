@@ -8,6 +8,66 @@ Its job is to:
 
 Use this guide to quickly find where to make changes without re-reading the whole codebase.
 
+## How a run works, and what it sends
+
+Two different files are both called `docs-sync.yml`:
+
+- **The caller's workflow** lives in each repository that uses autodocs. It is short: it names the engine and passes settings in.
+- **The engine's workflow** lives here. It holds the steps, and it is the part that receives the secrets.
+
+```mermaid
+flowchart LR
+  subgraph caller["Calling repository"]
+    cw[".github/workflows/docs-sync.yml<br/>uses: …/docs-sync.yml@v1<br/>engine_ref: vars.DOCS_SYNC_ENGINE_REF"]
+    files["Repository files<br/>README.md, technical-readme.md,<br/>service-mapping.yml, source"]
+    tr["technical-readme.md"]
+  end
+  subgraph org["Organisation settings"]
+    pin["Variable DOCS_SYNC_ENGINE_REF<br/>(a commit ID)"]
+    sec["Secrets<br/>Claude token, Confluence token"]
+  end
+  subgraph engine["This repository"]
+    tag["Tag v1<br/>(protected: cannot move)"]
+    ew[".github/workflows/docs-sync.yml<br/>the engine's steps"]
+    sc["scripts/docs_sync.py<br/>prompts and logic"]
+  end
+  claude["Claude<br/>(the organisation's own account)"]
+  conf["Confluence<br/>(the service's page)"]
+
+  cw -- "1 uses @v1" --> tag
+  tag -- "2 loads the workflow at that commit" --> ew
+  pin -- "3 read by the caller" --> cw
+  sec -- "3 read by the caller" --> cw
+  cw -- "4 passes engine_ref and secrets" --> ew
+  ew -- "5 fetches scripts at engine_ref" --> sc
+  files -- "6 selected content" --> sc
+  sc -- "7 prompt" --> claude
+  sc -- "8 page body" --> conf
+  ew -- "9 commits" --> tr
+```
+
+### What leaves the calling repository
+
+- **To Claude, under the organisation's own Claude token:**
+  - the prompts;
+  - the repository's file list;
+  - `README.md`, `technical-readme.md` and `service-mapping.yml`;
+  - the current Confluence page and any related pages it names;
+  - the names of the files a pull request changed;
+  - the full text of up to `max_request_files` files the model asks to read (20 in the usual settings).
+- **To Confluence:** the page body for the service's page, and, where the service opts in, its entry on the parent page.
+- **Back to the repository:** a commit of `technical-readme.md`.
+
+The pull request diff itself is downloaded to the runner but never sent: only the names of the files it touched are.
+
+Files with credential-like names (`.env*`, `.npmrc`, key files, `*.tfvars`, `*.tfstate`, `localEnv*` and paths under `secrets/`, `credentials/`, `keys/`, `vault/` or `private/`) are never offered to the model. Their contents are not checked, though. A secret written directly into an ordinary source file would be sent if the model asked for that file, so keep secrets out of source.
+
+### What is fixed, and what is not
+
+- **Fixed: the engine's workflow.** A caller names it as `@v1`. The repository rule `tagging` stops any `v*` tag being moved, deleted or newly created, and requires tags to be signed, so `v1` always means the same commit. Anyone can check the rule on this repository's rules page (`github.com/panda-don0/autodocs/rules`) or through the API.
+- **Fixed: the scripts and prompts.** The engine's workflow fetches them at `engine_ref`, which callers take from the organisation variable `DOCS_SYNC_ENGINE_REF`, a commit ID. Changing that one variable moves every repository to a new engine version at once.
+- **Fixed: the tools installed during a run.** The Python packages are installed from `scripts/requirements.txt` in the pinned engine copy, at exact versions with `--no-deps`, so nothing else is pulled in. Claude Code is named at an exact release in `claude_code_command` (`npx -y @anthropic-ai/claude-code@2.1.290` in `config.yml` and the caller template). The engine refuses to run a command that installs `@anthropic-ai/claude-code` without an exact version.
+
 ## Mental model (high-level)
 Think of this repo as 3 layers:
 1. **Workflow orchestration** (how/when it runs): `.github/workflows/docs-sync.yml`
@@ -103,6 +163,17 @@ define `service_repo_topology` in `service-mapping.yml` so the model gets explic
 Mapping layout support is backward compatible; existing configurations continue to work.
 
 If an agentic request is “set up docs sync in this repo,” these three files should be the first target search/edit locations.
+
+## Parent page entries
+A service whose mapping sets `parent_summary: true` also keeps a two-or-three-sentence entry on its
+parent Confluence page (the direct parent, or `parent_page_id`). The logic is in `scripts/parent_page.py`:
+- Entries live in a "Services in this area" section bounded by anchor macros; nothing outside it, and no
+  other service's entry, is changed.
+- A parent with no section gets one at the end; a new service is inserted in name order.
+- A save that clashes with another run (HTTP 409) re-reads the parent and retries once, then fails.
+- The parent page must stay hand-written: never map it as any service's own page.
+
+Tests: `python -m pytest tests`.
 
 ## Suggested debug order for most incidents
 1. Confirm mode/inputs in `.github/workflows/docs-sync.yml`

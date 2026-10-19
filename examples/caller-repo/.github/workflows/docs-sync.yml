@@ -65,7 +65,7 @@ jobs:
       engine_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.engine_ref || vars.DOCS_ENGINE_REF || '__SET_DOCS_ENGINE_REF_GITHUB_VAR__' }}
       docs_sync_debug: ${{ github.event_name == 'workflow_dispatch' && inputs.docs_sync_debug || 'false' }}
       docs_sync_llm_provider: "claude_code"
-      claude_code_command: "npx -y @anthropic-ai/claude-code"
+      claude_code_command: "npx -y @anthropic-ai/claude-code@2.1.290"
       python_version: "3.12"
       node_version: "20"
     secrets:
