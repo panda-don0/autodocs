@@ -929,8 +929,24 @@ def call_claude_via_anthropic(api_key: str, model: str, prompt: str) -> str:
     return text
 
 
+CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code"
+
+
+def require_pinned_claude_code(command: str) -> None:
+    """Refuse a command that would install whatever Claude Code release is newest."""
+    if CLAUDE_CODE_PACKAGE not in command:
+        return
+    if not re.search(re.escape(CLAUDE_CODE_PACKAGE) + r"@\d+\.\d+\.\d+(?:\s|$)", command):
+        fail(
+            f"CLAUDE_CODE_COMMAND '{command}' does not pin a version of {CLAUDE_CODE_PACKAGE}. "
+            f"Name an exact release, for example 'npx -y {CLAUDE_CODE_PACKAGE}@2.1.290', so every run "
+            "uses the same code."
+        )
+
+
 def call_claude_via_claude_code(model: str, prompt: str) -> str:
     command = os.getenv("CLAUDE_CODE_COMMAND", "claude")
+    require_pinned_claude_code(command)
     base_cmd = shlex.split(command)
     model_args = ["--model", model] if model else []
     cmd = base_cmd + model_args + ["-p", prompt]

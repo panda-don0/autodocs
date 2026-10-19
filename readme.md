@@ -64,9 +64,9 @@ Files with credential-like names (`.env*`, `.npmrc`, key files, `*.tfvars`, `*.t
 
 ### What is fixed, and what is not
 
-- **Fixed: the engine's workflow.** A caller names it as `@v1`. The repository rule `tagging` stops any `v*` tag being moved, deleted or newly created, and requires tags to be signed, so `v1` always means the same commit. Anyone can check the rule on this repository's rules page (`github.com/panda-don0/autodocs/rules`) or through the API; only its owner can bypass or change it.
+- **Fixed: the engine's workflow.** A caller names it as `@v1`. The repository rule `tagging` stops any `v*` tag being moved, deleted or newly created, and requires tags to be signed, so `v1` always means the same commit. Anyone can check the rule on this repository's rules page (`github.com/panda-don0/autodocs/rules`) or through the API.
 - **Fixed: the scripts and prompts.** The engine's workflow fetches them at `engine_ref`, which callers take from the organisation variable `DOCS_SYNC_ENGINE_REF`, a commit ID. Changing that one variable moves every repository to a new engine version at once.
-- **Not fixed: the tools installed during a run.** The usual caller settings run Claude Code as `npx -y @anthropic-ai/claude-code`, which installs its newest release each time. The workflow installs the newest `requests` and `pyyaml` from PyPI. Both run while the run holds the Claude and Confluence tokens. Pin their versions to fix them.
+- **Fixed: the tools installed during a run.** The Python packages are installed from `scripts/requirements.txt` in the pinned engine copy, at exact versions with `--no-deps`, so nothing else is pulled in. Claude Code is named at an exact release in `claude_code_command` (`npx -y @anthropic-ai/claude-code@2.1.290` in `config.yml` and the caller template). The engine refuses to run a command that installs `@anthropic-ai/claude-code` without an exact version.
 
 ## Mental model (high-level)
 Think of this repo as 3 layers:
